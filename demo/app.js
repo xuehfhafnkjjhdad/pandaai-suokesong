@@ -151,9 +151,10 @@
     },
     actions: {
       t: '这三个按钮是什么',
-      b: '每个按钮就是一次真实的决定：拿多少钱进场。<br><br>' +
-        '这里的行情是 2024 年真实走过的，你做的这个决定会直接影响下一关你手里<br>' +
-        '有多少仓位、要面对多大的浮亏。<b>选完不能改。</b>'
+      b: '每个按钮就是一次真实的决定：<b>拿多少钱进场</b>。25% 就是拿四分之一的本金去买，空仓就是这次不买。<br><br>' +
+        '这里的行情是 2024 年真实走过的。你这一关买多少，会直接决定<b>下一关你手里有多少仓位、扛多大的浮亏</b>——' +
+        '第二关涨了你赚得多的同时，第三关跌下来你亏得也多。<br><br>' +
+        '<b>选完不能改。</b>想清楚再点，这也是被记录的一部分。'
     }
   };
 
@@ -256,6 +257,11 @@
 
   function drawChart(n) {
     if (!CW) resizeCanvas();
+    else {
+      // 布局变化可能改变 canvas 的 CSS 尺寸而不触发 resize 事件，绘制前对一次尺寸
+      var rr = cv.getBoundingClientRect();
+      if (Math.round(rr.width) !== Math.round(CW) || Math.round(rr.height) !== Math.round(CH)) resizeCanvas();
+    }
     ctx.clearRect(0, 0, CW, CH);
     var rows = rowsNow();
     var hi = -Infinity, lo = Infinity, k;
@@ -351,6 +357,11 @@
     var parts = String(st.name).split('·');
     return parts[1] || parts[0];
   }
+  // S1/S2/S3 是内部编号，对外只说"第几关"
+  function stageLabel(id) {
+    var m = /S(\d)/.exec(String(id));
+    return m ? '第' + m[1] + '关' : String(id);
+  }
 
   function enterStage(idx) {
     S.i = idx; S.probes = []; S.locked = false; S.stageStart = performance.now();
@@ -361,9 +372,11 @@
     field.dataset.season = SEASON[st.name.charAt(0)] || 'spring';
 
     $('#console').classList.remove('collapsed');
-    $('#askline').textContent = S.round > 0
-      ? '第 ' + (S.round + 1) + ' 轮 · 同样的行情，这次换成另一套选项。'
-      : '你可以先照料一下，也可以直接决定。';
+    // 决策按钮的说明入口：不做成新手引导页，点"?"才知道，不打断节奏
+    $('#askline').innerHTML = (S.round > 0
+      ? '第 ' + (S.round + 1) + ' 轮 · 同样的行情，' + (S.round % 2 === 1 ? '这次换成另一套选项。' : '这次换回第一套选项。')
+      : '你可以先照料一下，也可以直接决定。') +
+      '<i class="qbtn" data-help="actions">?</i>';
     $('#stageName').textContent = stageTitle(st);
     $('#stageDate').textContent = fmtDate(st.date);
     var dots = document.querySelectorAll('.dots i');
@@ -459,9 +472,9 @@
   function renderActions(st) {
     var host = $('#actions'); host.innerHTML = '';
     var group = S.pos > 0 ? (st.actions.holding || st.actions.default) : (st.actions.default || st.actions.empty);
-    // 第二轮起换一套决策姿势，避免"重玩还是那三个按钮"
+    // 第二轮起换一套决策姿势，避免"重玩还是那三个按钮"；之后单双轮交替，不会每轮都一样
     var alt = ALT_ACTIONS[st.id];
-    if (S.round > 0 && alt) {
+    if (S.round % 2 === 1 && alt) {
       if (Object.prototype.toString.call(alt) === '[object Array]') group = alt;
       else {
         var g2 = S.pos > 0 ? alt.holding : alt.empty;
@@ -505,8 +518,19 @@
     $('#timerFill').style.transition = 'none';
     var hedge = S.care.hedge || !!a.stopLossSet;
     var hint = $('#fieldHint'); if (hint) hint.classList.remove('on');
-    $('#askline').textContent = '你选了：' + a.label + (hedge ? '（篱笆立着，止损在）' : '');
+    // 收起后的那 2.8 秒，面板空出来一大块；用"播种→抽芽→结果→揭晓"四拍把它填成生长进度，
+    // 而不是留一片白。空仓就写一行，不假装在长。
+    var line = '你选了：' + a.label + (hedge ? '（篱笆立着，止损在）' : '');
+    line += S.pos === 0
+      ? '<div class="beats"><i class="on">这一关地空着，什么都不长</i></div>'
+      : '<div class="beats"><i data-b="0">播种</i><i data-b="1">抽芽</i><i data-b="2">结果</i><i data-b="3">揭晓</i></div>' +
+        '<div class="gline"><b id="glineFill"></b></div>';
+    $('#askline').innerHTML = line;
     $('#console').classList.add('collapsed');
+    if (S.pos > 0) {
+      var gf = $('#glineFill');
+      requestAnimationFrame(function () { gf.style.width = '100%'; });
+    }
 
     var invest = S.cash * S.pos / 100;
     var pnl = invest * st.reveal.endPct / 100;
@@ -580,6 +604,10 @@
     var seed = $('.seed', plot), dust = $('.dust', plot);
     var beast = $('#beast');
     beast.style.left = ((S.i * 33.333) + 16.666) + '%';
+    var beat = function (n) {
+      var b = document.querySelector('.beats i[data-b="' + n + '"]');
+      if (b) b.classList.add('on');
+    };
 
     if (entry.fruit.hole) {
       at(240, function () { $('.hole', plot).classList.add('on'); });
@@ -590,9 +618,10 @@
     }
 
     // 0.2s 播种
-    at(200, function () { seed.classList.add('drop'); dust.classList.add('puff'); });
+    at(200, function () { seed.classList.add('drop'); dust.classList.add('puff'); beat(0); });
     // 0.5s 抽芽（株高由仓位决定）
     at(500, function () {
+      beat(1);
       var s = $('.stem', plot), base = GROUND, h = fh * heightRatio(entry.pos);
       s.style.transition = 'height .42s cubic-bezier(.2,.8,.3,1)';
       s.style.height = h + 'px';
@@ -604,6 +633,7 @@
     });
     // 0.9s 结果
     at(900, function () {
+      beat(2);
       var f = entry.fruit, fruit = $('.fruit', plot);
       var size = SIZE[f.size] || 22, c = COLORS[f.color];
       var base = GROUND, h = fh * heightRatio(entry.pos);
@@ -618,7 +648,7 @@
       if (f.loose) $('.loose', plot).classList.add('on');
     });
     // 1.3s 揭晓：数字滚动 + K 线继续往后走
-    at(1300, function () { rollNumber(entry); revealChart(); });
+    at(1300, function () { beat(3); rollNumber(entry); revealChart(); });
     // 2.0s 收割取光
     at(2000, function () {
       beast.classList.add('in');
@@ -810,8 +840,21 @@
 
     html += '<div class="formline"><b>' + FORMS[form].n + '</b><span>' + FORMS[form].s + '</span></div>';
 
-    if (selfLine) html += '<div class="card" style="margin-top:12px"><h3>你以为 vs 实际</h3><p>' + selfLine + '</p>' +
-      '<p class="tiny" style="margin-top:6px">' + real.n + ' · ' + real.tag + '</p></div>';
+    if (selfLine) {
+      var selfB = S.self ? beastOf(S.self) : null;
+      html += '<div class="card vs" style="margin-top:12px"><h3>你以为 vs 实际</h3>';
+      if (selfB) {
+        html += '<div class="vsrow">' +
+          '<span class="vscell"><span class="bth big" style="--bc:' + COLORS[selfB.k].hex + '"><img src="' + selfB.img + '" alt=""></span>' +
+          '<b>' + selfB.n + '</b><i>你选的</i></span>' +
+          '<span class="vsarrow">→</span>' +
+          '<span class="vscell"><span class="bth big" style="--bc:' + COLORS[real.k].hex + '"><img src="' + real.img + '" alt=""></span>' +
+          '<b>' + real.n + '</b><i>行为显示的</i></span>' +
+          '</div>';
+      }
+      html += '<p>' + selfLine + '</p>' +
+        '<p class="tiny" style="margin-top:6px">' + real.n + ' · ' + real.tag + '</p></div>';
+    }
 
     var shown = ORDER.filter(function (c) { return wx.pct[c] > 0; })
       .sort(function (a, b) { return wx.pct[b] - wx.pct[a]; });
@@ -823,7 +866,8 @@
       : '三株果实的颜色，取那一次行为的最高项') + '</div>';
     html += '<div class="wuxing">' + shown.map(function (c) {
       var n = S.entries.filter(function (e) { return !e.fruit.hole && e.fruit.color === c; }).length;
-      return '<div class="wrow"><span class="sw" style="background:' + COLORS[c].hex + '"></span>' +
+      return '<div class="wrow">' +
+        '<span class="bth" style="--bc:' + COLORS[c].hex + '"><img src="' + beastOf(c).img + '" alt=""></span>' +
         '<span style="width:38px">' + beastOf(c).n + '</span>' +
         '<span class="bar"><i style="width:' + wx.pct[c] + '%;background:' + COLORS[c].hex + '"></i></span>' +
         '<span class="pct">' + wx.pct[c] + '%</span>' +
@@ -832,7 +876,7 @@
 
     html += '<div class="card"><h3>卡点 · 该练哪一步</h3><div class="kadname">' + kad[0] + '</div><p>' + kad[1] + '</p>';
     html += '<div class="ev">' + S.entries.map(function (e) {
-      return '<span>' + e.stageId + '｜' + (e.pos === 0 ? '空仓' : e.pos + '%') +
+      return '<span>' + stageLabel(e.stageId) + '｜' + (e.pos === 0 ? '空仓' : e.pos + '%') +
         '｜浇' + e.probes.length + '｜' + (e.loose ? '松土' : '—') + '｜' + (e.stopLoss ? '篱笆' : '—') + '</span>';
     }).join('') + '</div></div>';
 
@@ -858,7 +902,7 @@
       return '<span>' + beastOf(c).n + ' ' + (wx.raw[c] || 0).toFixed(1) + '（' + wx.pct[c] + '%）</span>';
     }).join('') + '</div>';
     html += '<div class="ev" style="margin-top:8px">' + S.entries.map(function (e) {
-      return '<span>' + e.stageId + '｜' + Math.round(e.decisionMs / 1000) + 's｜营养 ' + e.nutrition + '/3</span>';
+      return '<span>' + stageLabel(e.stageId) + '｜' + Math.round(e.decisionMs / 1000) + 's｜营养 ' + e.nutrition + '/3</span>';
     }).join('') + '</div>';
     html += '<p class="tiny">画像依据：' + S.entries.reduce(function (a, e) { return a + e.probes.length; }, 0) +
       ' 次查数据、' + S.entries.filter(function (e) { return e.loose; }).length + ' 次验证假设、' +

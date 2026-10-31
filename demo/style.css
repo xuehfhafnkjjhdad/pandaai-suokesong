@@ -100,7 +100,9 @@ body {
 .dots i { width: 16px; height: 3px; border-radius: 2px; background: var(--line); }
 .dots i.on { background: var(--ink); }
 
-#chartWrap { position: relative; height: 22dvh; min-height: 126px; margin: 0 12px; }
+/* flex:none 必须写死：第二关的操作按钮比第一关多一个，一旦允许收缩，
+   canvas 的 CSS 尺寸会被压扁而绘制尺寸不变，整张 K 线会缩到左上角一小块 */
+#chartWrap { position: relative; flex: none; height: 22dvh; min-height: 126px; margin: 0 12px; }
 #chart { width: 100%; height: 100%; display: block; }
 #captions { position: absolute; left: 0; right: 0; bottom: 2px; display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px; }
 .cap { font-size: 11.5px; color: var(--ink2); background: rgba(255,255,255,.72); border: 1px solid var(--line);
@@ -274,7 +276,17 @@ body.img-on .beast[data-form="2"] .beast-art { transform: scaleX(-1) scale(1.18)
 #console.collapsed .probes, #console.collapsed .actions, #console.collapsed .care,
 #console.collapsed .carehead, #console.collapsed .timerbar { display: none; }
 #console.collapsed { padding-bottom: 22px; }
-#console.collapsed .askline { font-size: 13.5px; color: var(--ink); margin: 2px 0 0; }
+/* 决定之后面板收起，剩下的空白让这句话居中顶住，避免屏幕下半截发空 */
+#console.collapsed { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; }
+#console.collapsed .askline { font-size: 13.5px; color: var(--ink); margin: 0; text-align: center; line-height: 1.6; }
+/* 生长四拍 + 2.8 秒进度条：把收起后的空白变成"正在长"的那一刻 */
+.beats { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 12px;
+  font-size: 11.5px; color: var(--ink3); letter-spacing: .04em; }
+.beats i { font-style: normal; opacity: .32; transition: opacity .25s, color .25s; }
+.beats i.on { opacity: 1; color: var(--ink); }
+.gline { width: 176px; height: 2px; margin: 11px auto 0; background: var(--line); border-radius: 2px; overflow: hidden; }
+.gline b { display: block; width: 0; height: 100%; background: var(--ink3);
+  transition: width 2.8s linear; }
 
 /* ── 结果页 ── */
 #result { overflow-y: auto; padding: 22px 18px 34px; display: block; }
@@ -323,6 +335,17 @@ body.img-on .beast[data-form="2"] .beast-art { transform: scaleX(-1) scale(1.18)
 .wuxing { margin-bottom: 16px; }
 .wrow { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-bottom: 6px; color: var(--ink2); }
 .wrow .sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+/* 收成行用动物头像代替色块：色环保留五行的颜色信息，头像负责"是哪只兽" */
+.bth { position: relative; flex: none; display: block; width: 28px; height: 28px; border-radius: 50%; overflow: hidden;
+  background: #f7f3e7; box-shadow: inset 0 0 0 2px var(--bc, #d8d1bf); }
+.bth img { width: 100%; height: 100%; object-fit: contain; transform: scale(1.18); }
+.bth.big { width: 56px; height: 56px; box-shadow: inset 0 0 0 2.5px var(--bc, #d8d1bf), 0 1px 3px rgba(35,32,28,.08); }
+/* 你以为 vs 实际：两只兽并排，取代纯文字的对照 */
+.vsrow { display: flex; align-items: center; justify-content: center; gap: 16px; margin: 12px 0 12px; }
+.vscell { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.vscell b { font-size: 13px; font-weight: 500; color: var(--ink); }
+.vscell i { font-style: normal; font-size: 10.5px; color: var(--ink3); }
+.vsarrow { color: var(--ink3); font-size: 15px; }
 .wrow .bar { flex: 1; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .wrow .bar i { display: block; height: 100%; }
 .wrow .pct { width: 40px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
