@@ -1,0 +1,10 @@
+=== 导出校验 ===
+S1 OK   close=3159.25(3159.25)  pct=-0.42(-0.42)  rank=0.1%(0.1)  reveal=3201.05(3201.05)
+     vol_ratio=0.83  amp20=6.9%  chg5=-2.23  chg20=-5.57  dd3y=-37.9%
+S2 OK   close=4017.85(4017.85)  pct=+8.48(8.48)  rank=48.5%(48.5)  reveal=4256.10(4256.1)
+     vol_ratio=3.26  amp20=28.4%  chg5=25.06  chg20=22.58  dd3y=-21.0%
+S3 OK   close=3955.98(3955.98)  pct=-7.05(-7.05)  rank=41.0%(41.0)  reveal=3831.59(3831.59)
+     vol_ratio=2.50  amp20=41.5%  chg5=16.3  chg20=21.16  dd3y=-22.2%
+
+ALL OK
+written: E:\pandaAI\data\stages.json (57617 bytes)

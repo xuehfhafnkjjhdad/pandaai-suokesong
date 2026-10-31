@@ -1,0 +1,44 @@
+# ───────── 凭据：绝不提交 ─────────
+.env
+.env.*
+*.local.py
+_local/
+*.pem
+*.key
+
+# ───────── 依赖 ─────────
+node_modules/
+_tools/node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ───────── 本地备份 / 临时产物 ─────────
+*.bak
+*.bak.*
+demo/*.bak.js
+demo/*.bak.css
+demo/*.bak.html
+*.tmp
+*.log
+
+# ───────── 编辑器 / 系统 ─────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ───────── 本地工作区数据（AI 记忆 / 缓存，不属于代码）─────────
+.workbuddy/
+
+# ───────── 赛事方资料：不对外二次分发 ─────────
+# 公开仓库不挂官方赛题原文、数据平台接口文档、SDK 内部签名导出
+PandaAI苏客松赛题*.pdf
+PandaData_接口速查表.md
+pandadata_signatures.json
+五行灵兽·团队作战手册v1.0.md
+
+# ───────── 生图中间产物（成品放 demo/assets/，中间图不进库）─────────
+generated-images/

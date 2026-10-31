@@ -1,0 +1,815 @@
+/* 五行灵兽 · 决策即播种 demo v0.2
+ * 基线：《开发基线 v1.0 · 第一版系统 + 秒级节奏》
+ *   第一版要素全留：四季（一关一季）/ 农事动作(浇水·松土·篱笆) / 双属性果实 /
+ *                  三阶成长 / 自选幼兽→行为发现 / 15 格矩阵 / 血脉变体留位
+ *   唯一改动：生长与喂养压到秒级（每关 2.8s，关末连喂 2.8s）
+ * 注意：本文件的五行/营养计算是【内联简化版】，只为 demo 自洽；
+ *       正式版必须按《接口契约 v1.0》走 rules.json + 独立算法模块，前端不许自算。
+ */
+(function () {
+  'use strict';
+
+  var PD = window.PD;
+  var S = {
+    i: 0, pos: 0, cash: 100000, entries: [],
+    probes: [], locked: false, timers: [], chartToken: 0,
+    stageStart: 0, self: null, fed: 0, rows: [], extra: null, pendingReveal: null,
+    care: { loose: false, hedge: false }
+  };
+
+  var W = {
+    A1: { 金: 4, 木: -1, 水: 1 }, A2: { 金: 2 }, A3: { 金: 2, 木: -1 },
+    A4: { 土: 2, 木: 2, 金: -2 }, A4b: { 土: 3, 木: 2, 金: -2 },
+    A5: { 火: 3, 土: -2, 金: -2 }, A6: { 水: 2, 火: 1, 金: 1 },
+    A7: { 水: 1, 土: 1, 火: -1 }, A8: { 土: 1, 金: 1, 水: -1 },
+    A9: { 火: 2, 水: -1 }, A10: { 金: 1, 土: 1, 火: -1 },
+    A11: { 火: 2, 水: -1 }, D1: { 金: 2 }, D2: { 金: -1 }, D3: { 金: -1 },
+    E1: { 土: 2, 金: 1 }, E2: { 火: 2, 土: -2 }, E3: { 火: 1 },
+    F1: { 木: 2 }, F2: { 火: 1, 木: -1 }
+  };
+  var COLORS = {
+    金: { name: '白金', hex: '#D9D2B8', ink: '#7A7358' },
+    木: { name: '青碧', hex: '#4E9A6A', ink: '#2C5E40' },
+    水: { name: '玄蓝', hex: '#2B4C7E', ink: '#1A3050' },
+    火: { name: '赤红', hex: '#C0392B', ink: '#7A2018' },
+    土: { name: '土黄', hex: '#B8860B', ink: '#6E5008' }
+  };
+  var ORDER = ['金', '木', '水', '火', '土'];
+
+  var BEASTS = [
+    { k: '金', n: '猎豹', d: '盯信号，该砍就砍' },
+    { k: '木', n: '大象', d: '看得远，能等' },
+    { k: '水', n: '狐狸', d: '先验证，再动手' },
+    { k: '火', n: '狼', d: '敢冲，怕错过' },
+    { k: '土', n: '龟', d: '先保本，慢就是快' }
+  ];
+
+  var FORMS = [
+    { n: '潜力态 · 幼兽', s: '还没定形，可塑性最高' },
+    { n: '成长期 · 壮兽', s: '开始有自己的方法了' },
+    { n: '定形 · 定形兽', s: '形成了稳定的链路' }
+  ];
+
+  // 第一版第六节：五行 × 形态 = 15 格。形态决定"练多深"，五行决定"用什么题材"
+  var MATRIX = {
+    金: ['看一组带明确信号的行情，认识"信号"到底是什么',
+      '用历史数据对比"止损 vs 扛住"，回撤差多少',
+      '构建并回测一套信号触发规则，把假信号的成本也算进去'],
+    木: ['看 10 年指数长线，理解复利是怎么长出来的',
+      '对比"长期持有 vs 频繁交易"的历史结果',
+      '构建定投 / 再平衡研究任务，叠加估值分位'],
+    水: ['"提出假设 → 看数据 → 验证"的入门任务',
+      '证据核查练习：一个结论 vs 它的原始数据',
+      '自定义研究模板 + 均值回归现象的数据探索'],
+    火: ['认识动量效应：为什么追涨有时候是有效的',
+      '24 小时冷静规则实验，并在动量回测里看见交易成本',
+      '高频数据与滑点研究'],
+    土: ['认识波动率：同一个资产的三种风险呈现',
+      '低波动策略的历史表现对比',
+      '防御型组合 + 风险平价 / 尾部风险研究']
+  };
+
+  var PROBES = [
+    { k: 'rank5y', t: '5年分位', f: function (m) { return m.pct_rank_5y + '%' } },
+    { k: 'drawdown', t: '3年回撤', f: function (m) { return m.drawdown_3y + '%' } },
+    { k: 'vol_ratio', t: '量能倍数', f: function (m) { return m.vol_ratio_20 + '倍' } },
+    { k: 'amp_20', t: '20日振幅', f: function (m) { return m.amp_20 + '%' } }
+  ];
+
+  var SEASON = { 春: 'spring', 夏: 'summer', 秋: 'autumn', 冬: 'winter' };
+
+  function $(s, r) { return (r || document).querySelector(s); }
+  function at(ms, fn) { var t = setTimeout(fn, ms); S.timers.push(t); return t; }
+  function clearTimers() { S.timers.forEach(clearTimeout); S.timers = []; }
+  function fmtDate(d) { return d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6, 8); }
+  function money(n) {
+    var s = Math.abs(Math.round(n)).toLocaleString('zh-CN');
+    return (n > 0 ? '+' : n < 0 ? '−' : '') + s;
+  }
+
+  /* ─────────── 绘格 ─────────── */
+  function buildPlot(host, idx) {
+    var p = document.createElement('div');
+    p.className = 'plot';
+    p.dataset.i = idx;
+    p.style.left = (idx * 33.333) + '%';
+    p.innerHTML =
+      '<div class="hole"></div>' +
+      '<div class="wet"></div>' +
+      '<div class="loose"><i></i><i></i><i></i></div>' +
+      '<div class="hedge"><span></span><span></span></div>' +
+      '<div class="stem"></div>' +
+      '<div class="leaf"></div>' +
+      '<div class="fruit"></div>' +
+      '<div class="seed"></div>' +
+      '<div class="dust"></div>';
+    host.appendChild(p);
+    return p;
+  }
+
+  function plotOf(host, idx) { return host.querySelector('.plot[data-i="' + idx + '"]'); }
+
+  // 株高连续跟随仓位：80% 和 100% 必须看得出差异，不许分档
+  function heightRatio(pos) {
+    if (!pos || pos <= 0) return 0;
+    var p = Math.min(100, pos);
+    return 0.12 + 0.40 * p / 100;
+  }
+  var SIZE = [0, 18, 25, 34];
+  var GROUND = 26;
+
+  function paint(plot, f, animate, fh) {
+    var stem = $('.stem', plot), fruit = $('.fruit', plot), leaf = $('.leaf', plot);
+    var hole = $('.hole', plot), hedge = $('.hedge', plot), wet = $('.wet', plot), loose = $('.loose', plot);
+    var base = GROUND;
+
+    if (f.hole) {
+      hole.classList.add('on');
+      if (f.hedge) hedge.classList.add('on');
+      return;
+    }
+    var h = fh * heightRatio(f.pos != null ? f.pos : 0);
+    var size = SIZE[f.size] || 22;
+    var c = COLORS[f.color];
+    var fruitAt = function () {
+      stem.style.height = h + 'px';
+      leaf.style.bottom = (base + h * 0.52) + 'px';
+      fruit.style.bottom = (base + h - size / 2 - 2) + 'px';
+      leaf.classList.add('ok');
+      if (f.leaf === 'dry') leaf.classList.add('dry');
+    };
+    if (!animate) fruitAt();
+
+    fruit.style.width = size + 'px';
+    fruit.style.height = size + 'px';
+    fruit.style.marginLeft = (-size / 2) + 'px';
+    fruit.style.background = 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.55), ' + c.hex + ' 52%, ' + c.ink + ')';
+    if (f.shine >= 3) fruit.style.boxShadow = '0 0 12px 4px ' + c.hex + '66';
+    else if (f.shine === 2) fruit.style.boxShadow = '0 0 6px 1px ' + c.hex + '33';
+    if (f.shine <= 1) fruit.classList.add('dim');
+    if (f.hedge) hedge.classList.add('on');
+    if (f.loose) loose.classList.add('on');
+    if (f.wet >= 2) wet.classList.add('on');
+    else if (f.wet === 1) { wet.style.opacity = .45; wet.classList.add('on'); }
+    if (!animate) {
+      fruitAt();
+      fruit.classList.add('on');
+    }
+    return { stem: stem, fruit: fruit, leaf: leaf };
+  }
+
+  /* ─────────── K 线 ─────────── */
+  var cv = $('#chart'), ctx = cv.getContext('2d'), CW = 0, CH = 0;
+
+  function resizeCanvas() {
+    var r = cv.getBoundingClientRect();
+    if (!r.width) return;
+    var dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    CW = r.width; CH = r.height;
+  }
+
+  function viewRows() { return PD.stages[S.i].kline.slice(-44); }
+  // 揭晓后的走势：append 到当前行情的右边，就是"K 线继续往后走"
+  function rowsNow() { return S.rows.concat(S.extra || []); }
+
+  function drawChart(n) {
+    if (!CW) resizeCanvas();
+    ctx.clearRect(0, 0, CW, CH);
+    var rows = rowsNow();
+    var hi = -Infinity, lo = Infinity, k;
+    for (k = 0; k < rows.length; k++) { hi = Math.max(hi, rows[k][2]); lo = Math.min(lo, rows[k][3]); }
+    var padT = 12, padB = 20, span = hi - lo || 1;
+    hi += span * .1; lo -= span * .1;
+    var y = function (v) { return padT + (hi - v) / (hi - lo) * (CH - padT - padB); };
+    var bw = CW / rows.length;
+    var bodyW = Math.max(1.2, bw * .62);
+    var cut = S.rows.length;   // 决策点
+
+    ctx.strokeStyle = 'rgba(35,32,28,.07)'; ctx.lineWidth = 1;
+    for (k = 1; k <= 3; k++) {
+      var gy = padT + (CH - padT - padB) * k / 4;
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(CW, gy); ctx.stroke();
+    }
+
+    var pts = [];
+    for (k = 0; k < Math.min(n, rows.length); k++) {
+      var r = rows[k], x = k * bw + bw / 2;
+      var up = r[4] >= r[1];
+      ctx.strokeStyle = up ? '#c0392b' : '#3f7d58';
+      ctx.fillStyle = up ? '#c0392b' : '#3f7d58';
+      if (k >= cut) ctx.globalAlpha = .85;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, y(r[2])); ctx.lineTo(x, y(r[3])); ctx.stroke();
+      var yo = y(r[1]), yc = y(r[4]);
+      ctx.fillRect(x - bodyW / 2, Math.min(yo, yc), bodyW, Math.max(1.2, Math.abs(yc - yo)));
+      pts.push([x, yc]);
+      ctx.globalAlpha = 1;
+    }
+    if (pts.length > 1) {
+      ctx.strokeStyle = 'rgba(35,32,28,.34)'; ctx.lineWidth = 1; ctx.beginPath();
+      pts.forEach(function (p, idx) { idx ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
+      ctx.stroke();
+    }
+    // 决策点竖线：告诉用户"从这里开始是后来的事"
+    if (S.extra && S.extra.length) {
+      var cx = cut * bw;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(35,32,28,.22)';
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(cx, padT); ctx.lineTo(cx, CH - padB); ctx.stroke();
+      ctx.restore();
+    }
+    var last = rows[Math.min(n, rows.length) - 1];
+    if (last) {
+      ctx.fillStyle = '#23201c';
+      ctx.font = '500 11px ui-monospace, monospace';
+      ctx.fillText(last[4].toFixed(2), 4, 12);
+      ctx.fillStyle = 'rgba(35,32,28,.45)';
+      ctx.font = '11px -apple-system, system-ui, sans-serif';
+      var mmdd = last[0].slice(0, 2) + '-' + last[0].slice(2, 4);
+      ctx.fillText(mmdd, CW - 38, 12);
+    }
+  }
+
+  function animateChart() {
+    var token = ++S.chartToken;
+    var total = S.rows.length, dur = 1600, t0 = performance.now();
+    (function tick(now) {
+      if (token !== S.chartToken) return;
+      var p = Math.min(1, (now - t0) / dur);
+      drawChart(Math.max(1, Math.round(p * total)));
+      if (p < 1) requestAnimationFrame(tick);
+    })(t0);
+  }
+
+  /* ─────────── 形态（对外只有名字，没有分数） ─────────── */
+  function formOf(n) { return n <= 2 ? 0 : n <= 5 ? 1 : 2; }
+
+  function setForm(n, flash) {
+    var f = formOf(n);
+    var el = $('#formName'), beast = $('#beast');
+    el.textContent = FORMS[f].n;
+    beast.dataset.form = String(f);
+    if (flash) {
+      el.parentNode.classList.remove('up');
+      void el.parentNode.offsetWidth;
+      el.parentNode.classList.add('up');
+    }
+  }
+
+  /* ─────────── 关卡 ─────────── */
+  function enterStage(idx) {
+    S.i = idx; S.probes = []; S.locked = false; S.stageStart = performance.now();
+    S.care = { loose: false, hedge: false };
+    S.rows = viewRows(); S.extra = null;
+    var st = PD.stages[idx];
+    var field = $('#field');
+    field.dataset.season = SEASON[st.name.charAt(0)] || 'spring';
+
+    $('#console').classList.remove('collapsed');
+    $('#askline').textContent = '你可以先照料一下，也可以直接决定。';
+    $('#stageName').textContent = st.name;
+    $('#stageDate').textContent = fmtDate(st.date);
+    var dots = document.querySelectorAll('.dots i');
+    for (var d = 0; d < dots.length; d++) dots[d].classList.toggle('on', d <= idx);
+
+    setForm(S.fed, false);
+    resetCare();
+    renderProbes(st);
+    renderActions(st);
+    startTimer();
+    requestAnimationFrame(function () { resizeCanvas(); animateChart(); repaintField(); });
+  }
+
+  // 已种下的植株按当前田地高度重画，避免布局变化后脱离地面
+  function repaintField() {
+    var field = $('#field');
+    if (!field || !field.querySelector('.plot')) return;
+    var fh = field.clientHeight;
+    S.entries.forEach(function (e, idx) {
+      var pl = plotOf(field, idx);
+      if (pl) paint(pl, e.fruit, false, fh);
+    });
+  }
+
+  function startTimer() {
+    var f = $('#timerFill');
+    f.style.transition = 'none'; f.style.transform = 'scaleX(1)';
+    requestAnimationFrame(function () {
+      f.style.transition = 'transform 10s linear';
+      f.style.transform = 'scaleX(0)';
+    });
+  }
+
+  function resetCare() {
+    var loose = $('#careLoose'), hedge = $('#careHedge');
+    loose.classList.remove('done'); hedge.classList.remove('done');
+    loose.disabled = false; hedge.disabled = false;
+    var pl = plotOf($('#field'), S.i);
+    if (pl) {
+      $('.loose', pl).classList.remove('on');
+      // 篱笆不在这里清，植株留痕属于上一次的记录
+    }
+  }
+
+  function renderProbes(st) {
+    var host = $('#probes'); host.innerHTML = '';
+    $('#carehead').innerHTML = '<b>浇水</b> · 每查一项数据，土上就湿一分';
+    PROBES.forEach(function (p) {
+      var b = document.createElement('button');
+      b.className = 'probe';
+      b.innerHTML = p.t;
+      b.onclick = function () {
+        if (S.locked) return;
+        if (S.probes.indexOf(p.k) < 0) S.probes.push(p.k);
+        b.classList.add('used');
+        b.innerHTML = p.t + '<small>' + p.f(st.metrics) + '</small>';
+        waterFeedback();
+      };
+      host.appendChild(b);
+    });
+  }
+
+  // 浇水回执：≤0.15s，土立刻湿
+  function waterFeedback() {
+    var pl = plotOf($('#field'), S.i);
+    if (!pl) return;
+    var wet = $('.wet', pl);
+    var n = S.probes.length;
+    wet.classList.add('on');
+    wet.style.opacity = n >= 2 ? 1 : .45;
+    var head = $('#carehead');
+    head.innerHTML = '<b>浇水</b> · 已查 ' + n + ' 项' + (n >= 3 ? '（够了，再看也湿不到哪去）' : '');
+  }
+
+  function resolvePos(v, cur) {
+    if (v === 'keep') return cur;
+    if (v === 'half') return Math.round(cur / 2);
+    return v;
+  }
+
+  function renderActions(st) {
+    var host = $('#actions'); host.innerHTML = '';
+    var group = S.pos > 0 ? (st.actions.holding || st.actions.default) : (st.actions.default || st.actions.empty);
+    group.forEach(function (a) {
+      var b = document.createElement('button');
+      b.className = 'act';
+      b.textContent = a.label;
+      b.onclick = function () { decide(st, a); };
+      host.appendChild(b);
+    });
+  }
+
+  function bindCare() {
+    $('#careLoose').onclick = function () {
+      if (S.locked || S.care.loose) return;
+      S.care.loose = true;
+      this.classList.add('done'); this.disabled = true;
+      var pl = plotOf($('#field'), S.i);
+      if (pl) $('.loose', pl).classList.add('on');   // 0.18s 回执
+    };
+    $('#careHedge').onclick = function () {
+      if (S.locked || S.care.hedge) return;
+      S.care.hedge = true;
+      this.classList.add('done'); this.disabled = true;
+      var pl = plotOf($('#field'), S.i);
+      if (pl) $('.hedge', pl).classList.add('on');   // 0.18s 回执
+    };
+  }
+
+  function decide(st, a) {
+    if (S.locked) return;
+    S.locked = true;
+    S.chartToken++;
+    var prev = S.pos;
+    S.pos = resolvePos(a.positionPct, S.pos);
+    var btns = document.querySelectorAll('.act, .probe, .carebtn');
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+    $('#timerFill').style.transition = 'none';
+    var hedge = S.care.hedge || !!a.stopLossSet;
+    $('#askline').textContent = '你选了：' + a.label + (hedge ? '（篱笆立着，止损在）' : '');
+    $('#console').classList.add('collapsed');
+
+    var invest = S.cash * S.pos / 100;
+    var pnl = invest * st.reveal.endPct / 100;
+
+    var n = S.probes.length;
+    var waterLv = n === 0 ? 0 : n <= 2 ? 1 : 2;
+    var shine = Math.min(3, 1 + (waterLv >= 1 ? 1 : 0) + ((S.care.loose || hedge) ? 1 : 0));
+    var nutrition = Math.min(3, waterLv + (S.care.loose ? 1 : 0) + (hedge ? 1 : 0));
+
+    var entry = {
+      stageId: st.id, actionId: a.id, code: a.code,
+      pos: S.pos, prevPos: prev, probes: S.probes.slice(),
+      stopLoss: hedge, loose: S.care.loose,
+      decisionMs: Math.round(performance.now() - S.stageStart),
+      endPct: st.reveal.endPct, pnl: pnl,
+      fruit: {
+        color: colorOf(a.code, n, S.care.loose),
+        size: Math.abs(st.reveal.endPct) >= 5 ? 3 : Math.abs(st.reveal.endPct) >= 2 ? 2 : 1,
+        shine: shine,
+        pos: S.pos,
+        leaf: (n === 0 && (a.code === 'A5' || a.code === 'A9' || a.code === 'E2')) ? 'dry' : 'ok',
+        hedge: hedge,
+        loose: S.care.loose,
+        wet: waterLv,
+        hole: S.pos === 0
+      },
+      nutrition: nutrition
+    };
+    S.entries.push(entry);
+    S.pendingReveal = st.reveal.kline || [];
+
+    grow(entry, function () {
+      if (S.i < PD.stages.length - 1) {
+        setTimeout(function () { enterStage(S.i + 1); }, 260);
+      } else {
+        feed(function () { showResult(); });
+      }
+    });
+  }
+
+  function colorOf(code, probesN, loose) {
+    var w = {}, k;
+    var rules = W[code];
+    if (rules) for (k in rules) w[k] = rules[k];
+    if (probesN === 0) { w['水'] = (w['水'] || 0) - 1; w['火'] = (w['火'] || 0) + .5; }
+    else w['水'] = (w['水'] || 0) + (probesN >= 3 ? 1 : .5);
+    if (loose) w['水'] = (w['水'] || 0) + 1;
+    var best = null, bv = -Infinity;
+    ORDER.forEach(function (c) { if ((w[c] || 0) > bv) { bv = w[c] || 0; best = c; } });
+    return bv > 0 ? best : '土';
+  }
+
+  /* ─────────── 2.8 秒五拍 ─────────── */
+  // 揭晓：append 后几根真实行情，0.6 秒走完 —— "K 线继续往后走"
+  function revealChart() {
+    S.extra = (S.pendingReveal || []).slice();
+    if (!S.extra.length) return;
+    var base = S.rows.length, full = base + S.extra.length;
+    var t0 = performance.now(), dur = 620;
+    (function tick(now) {
+      var p = Math.min(1, (now - t0) / dur);
+      drawChart(base + Math.round(p * (full - base)));
+      if (p < 1) requestAnimationFrame(tick);
+    })(t0);
+  }
+
+  function grow(entry, done) {
+    var field = $('#field');
+    var fh = field.clientHeight;
+    var plot = plotOf(field, S.i);
+    var seed = $('.seed', plot), dust = $('.dust', plot);
+    var beast = $('#beast');
+    beast.style.left = ((S.i * 33.333) + 16.666) + '%';
+
+    if (entry.fruit.hole) {
+      at(240, function () { $('.hole', plot).classList.add('on'); });
+      at(900, function () { rollNumber(entry); revealChart(); });
+      at(2000, function () { beast.classList.add('in', 'shake'); });
+      at(2400, function () { beast.classList.remove('shake', 'in'); done(); });
+      return;
+    }
+
+    // 0.2s 播种
+    at(200, function () { seed.classList.add('drop'); dust.classList.add('puff'); });
+    // 0.5s 抽芽（株高由仓位决定）
+    at(500, function () {
+      var s = $('.stem', plot), base = GROUND, h = fh * heightRatio(entry.pos);
+      s.style.transition = 'height .42s cubic-bezier(.2,.8,.3,1)';
+      s.style.height = h + 'px';
+      var leaf = $('.leaf', plot);
+      leaf.style.transition = 'bottom .42s ease, opacity .3s';
+      leaf.style.bottom = (base + h * .52) + 'px';
+      leaf.classList.add('ok');
+      if (entry.fruit.leaf === 'dry') leaf.classList.add('dry');
+    });
+    // 0.9s 结果
+    at(900, function () {
+      var f = entry.fruit, fruit = $('.fruit', plot);
+      var size = SIZE[f.size] || 22, c = COLORS[f.color];
+      var base = GROUND, h = fh * heightRatio(entry.pos);
+      fruit.style.width = size + 'px'; fruit.style.height = size + 'px';
+      fruit.style.marginLeft = (-size / 2) + 'px';
+      fruit.style.bottom = (base + h - size / 2 - 2) + 'px';
+      fruit.style.background = 'radial-gradient(circle at 34% 28%, rgba(255,255,255,.55), ' + c.hex + ' 52%, ' + c.ink + ')';
+      if (f.shine >= 3) fruit.style.boxShadow = '0 0 12px 4px ' + c.hex + '66';
+      else if (f.shine === 2) fruit.style.boxShadow = '0 0 6px 1px ' + c.hex + '33';
+      fruit.classList.add('on');
+      if (f.hedge) $('.hedge', plot).classList.add('on');
+      if (f.loose) $('.loose', plot).classList.add('on');
+    });
+    // 1.3s 揭晓：数字滚动 + K 线继续往后走
+    at(1300, function () { rollNumber(entry); revealChart(); });
+    // 2.0s 收割取光
+    at(2000, function () {
+      beast.classList.add('in');
+      if (entry.fruit.shine <= 1) beast.classList.add('shake'); else beast.classList.add('nod');
+      setTimeout(function () { beast.classList.remove('nod'); }, 520);
+      if (entry.fruit.shine <= 1) {
+        setTimeout(function () { $('.fruit', plot).classList.add('dim'); }, 180);
+        setTimeout(function () { beast.classList.remove('shake'); }, 520);
+      }
+      sparks(plot, entry.fruit.color);
+    });
+    // 2.8s 留痕 → 下一关
+    at(2900, function () { beast.classList.remove('in', 'nod', 'shake'); done(); });
+  }
+
+  function rollNumber(entry) {
+    var box = $('#revealNum');
+    var v = $('.v', box), kk = $('.k', box);
+    v.textContent = '0';
+    v.style.color = entry.endPct >= 0 ? '#c0392b' : '#3f7d58';
+    kk.textContent = entry.pos === 0 ? '这一关你没有持仓' : (entry.pos >= 70 ? '你的浮亏／浮盈' : '你的收益');
+    box.classList.add('show');
+    var t0 = performance.now(), dur = 620;
+    (function tick(now) {
+      var p = Math.min(1, (now - t0) / dur);
+      var e = 1 - Math.pow(1 - p, 3);
+      v.textContent = (entry.pnl >= 0 ? '+' : '−') + Math.abs(Math.round(entry.pnl * e)).toLocaleString('zh-CN');
+      if (p < 1) requestAnimationFrame(tick);
+    })(t0);
+    setTimeout(function () { box.classList.remove('show'); }, 1500);
+  }
+
+  function sparks(plot, color, x, y) {
+    var box = $('.fruit', plot);
+    var r = box.getBoundingClientRect(), f = $('#field').getBoundingClientRect();
+    for (var i = 0; i < 4; i++) {
+      (function (i) {
+        var s = document.createElement('div');
+        s.className = 'spark';
+        s.style.left = (x != null ? x : (r.left - f.left + r.width / 2)) + 'px';
+        s.style.top = (y != null ? y : (r.top - f.top + r.height / 2)) + 'px';
+        s.style.background = COLORS[color].hex;
+        $('#field').appendChild(s);
+        requestAnimationFrame(function () {
+          s.style.transition = 'transform .5s ease-out, opacity .5s';
+          s.style.transform = 'translate(' + (18 + i * 6) + 'px,' + (-10 - i * 4) + 'px)';
+          s.style.opacity = '0';
+        });
+        setTimeout(function () { s.remove(); }, 600);
+      })(i);
+    }
+  }
+
+  /* ─────────── 关末连喂：2.8 秒（第一版 30 秒喂养的秒级化） ─────────── */
+  function silk(plot, beast) {
+    var field = $('#field');
+    var r = $('.fruit', plot).getBoundingClientRect();
+    var b = beast.getBoundingClientRect(), fr = field.getBoundingClientRect();
+    var x1 = r.left - fr.left + r.width / 2, y1 = r.top - fr.top + r.height / 2;
+    var x2 = b.left - fr.left + b.width / 2, y2 = b.top - fr.top + b.height * .34;
+    var dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy);
+    var s = document.createElement('div');
+    s.className = 'silk';
+    s.style.left = x1 + 'px';
+    s.style.top = y1 + 'px';
+    s.style.width = len + 'px';
+    s.style.transform = 'rotate(' + (Math.atan2(dy, dx) * 180 / Math.PI) + 'deg)';
+    field.appendChild(s);
+    requestAnimationFrame(function () { s.classList.add('go'); });
+    setTimeout(function () { s.remove(); }, 720);
+  }
+
+  function feed(done) {
+    var field = $('#field'), beast = $('#beast'), tag = $('#feedTag');
+    var items = S.entries.slice();
+    tag.innerHTML = '<b>三株收成</b>一颗一颗喂给它';
+    tag.classList.add('on');
+    field.dataset.season = field.dataset.season || 'winter';
+    beast.classList.add('in');
+
+    var i = 0;
+    function next() {
+      if (i >= items.length) {
+        tag.classList.remove('on');
+        setTimeout(function () { beast.classList.remove('in'); done(); }, 260);
+        return;
+      }
+      var e = items[i], pl = plotOf(field, i);
+      beast.style.left = ((i * 33.333) + 16.666) + '%';
+      at(240, function () {
+        var f = $('.fruit', pl);
+        if (e.fruit.hole || e.fruit.shine <= 1) {
+          // 空坑 / 大而暗：灵兽吸一口就偏头，果实本体留在株上
+          beast.classList.add('shake');
+          if (!e.fruit.hole) f.classList.add('dim');
+          setTimeout(function () { beast.classList.remove('shake'); }, 500);
+        } else {
+          silk(pl, beast);
+          f.classList.add('dim');
+          var r = f.getBoundingClientRect(), fr = field.getBoundingClientRect();
+          sparks(pl, e.fruit.color, r.left - fr.left + r.width / 2, r.top - fr.top);
+          S.fed += e.nutrition;
+          setForm(S.fed, true);
+        }
+      });
+      at(800, function () { i++; next(); });
+    }
+    next();
+  }
+
+  /* ─────────── 结算 ─────────── */
+  function calcWuxing() {
+    var w = { 金: 0, 木: 0, 水: 0, 火: 0, 土: 0 };
+    S.entries.forEach(function (e) {
+      var r = W[e.code];
+      if (r) for (var k in r) w[k] += r[k];
+      var n = e.probes.length;
+      if (n >= 1) w['水'] += .5;
+      if (n >= 3) w['水'] += .5;
+      if (n === 0) { w['水'] -= 1; w['火'] += .5; }
+      if (e.loose) w['水'] += .5;
+      if (e.stopLoss) w['金'] += 2;
+    });
+    ORDER.forEach(function (c) { if (w[c] < 0) w[c] = 0; });
+    var sum = ORDER.reduce(function (a, c) { return a + w[c]; }, 0);
+    var pct = {};
+    ORDER.forEach(function (c) { pct[c] = sum > 0 ? Math.round(w[c] / sum * 1000) / 10 : 20; });
+    return { raw: w, pct: pct };
+  }
+
+  function diagnose() {
+    var wx = calcWuxing();
+    var top = ORDER.slice().sort(function (a, b) { return wx.pct[b] - wx.pct[a]; });
+    var dPct = wx.pct[top[0]];
+    var waterPct = wx.pct['水'], firePct = wx.pct['火'];
+    var totalProbes = S.entries.reduce(function (a, e) { return a + e.probes.length; }, 0);
+    var maxProbe = S.entries.reduce(function (a, e) { return Math.max(a, e.probes.length); }, 0);
+    var slN = S.entries.filter(function (e) { return e.stopLoss; }).length;
+    // 止损平仓 ≠ 不敢下手：必须先看有没有篱笆
+    var emptyNoSL = S.entries.filter(function (e) { return e.pos === 0 && !e.stopLoss; }).length;
+    var sameAction = S.entries.every(function (e) { return e.actionId === S.entries[0].actionId; });
+    var heavyN = S.entries.filter(function (e) { return e.pos >= 70; }).length;
+
+    // 判定必须同时满足「权重形状」与「行为证据」，否则会出现"查了 6 项却说你不验证"
+    if (emptyNoSL === S.entries.length)
+      return ['一次都没下手', '三关全空仓，也没在任何一关立篱笆——地里只留了三个坑。这次不是"你不行"，是系统还没看清你。', top[0], dPct];
+    if (slN >= 1 && emptyNoSL === 0 && maxProbe >= 2 && firePct < 35) {
+      return ['这一局没抓到明显卡点', '先查后动、扎过篱笆、仓位也没失控。特征太干净，反而不好下判断——多玩几局再看。', top[0], dPct];
+    }
+    if (emptyNoSL >= 1 && totalProbes >= 3) return ['不敢下判断', '数据你浇了 ' + totalProbes + ' 次，但有 ' + emptyNoSL + ' 关始终没有真的下手。', top[0], dPct];
+    if (sameAction) return ['只做熟悉的', '三关用了同一个动作——你的动作高度重复。', top[0], dPct];
+    if (firePct >= 40 && totalProbes <= 2) return ['不会验证', '你的收成偏赤红，但几乎没浇过一次水就动手了。', top[0], dPct];
+    if (dPct < 35) return ['想法不收敛', '三株颜色都不一样——你没有主线，每次都在用不同的方式做决定。', top[0], dPct];
+    if (waterPct >= 30 && maxProbe <= 1) return ['容易接受结论', '你浇过水，但每关只看了一眼就下了结论。', top[0], dPct];
+    if (heavyN >= 2) return ['习惯用重仓表态', '三关的仓位都压得很满——你用仓位表达判断，而不是用依据。', top[0], dPct];
+    return ['证据还不够', '这一局的行为太杂，没有一个能站住的形状。保留判断，比硬贴一个标签更诚实。', top[0], dPct];
+  }
+
+  function showResult() {
+    var wx = calcWuxing();
+    var dx = diagnose();
+    var kad = [dx[0], dx[1]], dominant = dx[2], dPct = dx[3];
+    var xian = S.entries.reduce(function (a, e) { return a + e.nutrition; }, 0);
+    var form = formOf(xian);
+    var task = MATRIX[dominant][form];
+    var totalProbes = S.entries.reduce(function (a, e) { return a + e.probes.length; }, 0);
+    var heavyN = S.entries.filter(function (e) { return e.pos >= 70; }).length;
+
+    // 自我判定 vs 行为显示
+    var same = S.self && S.self === dominant;
+    var selfLine = !S.self ? '' : (same
+      ? '你选的是 <b>' + BEASTS.filter(function (b) { return b.k === S.self })[0].n + '（' + S.self + '）</b>，行为也是 <b>' + dominant + '</b> —— 你很了解自己。'
+      : '你以为自己是 <b>' + BEASTS.filter(function (b) { return b.k === S.self })[0].n + '（' + S.self + '）</b>，行为却显示 <b>' + dominant + '</b> —— 这是这次最大的发现。');
+
+    var html = '';
+    html += '<h2>这是你这三关的地</h2>';
+    html += '<div class="sub">' + PD.meta.story + '｜春、夏、冬，同一块地，三株收成</div>';
+    html += '<div id="resultField"></div>';
+
+    html += '<div class="formline"><b>' + FORMS[form].n + '</b><span>' + FORMS[form].s + '</span></div>';
+
+    if (selfLine) html += '<div class="card" style="margin-top:12px"><h3>你以为 vs 实际</h3><p>' + selfLine + '</p></div>';
+
+    var shown = ORDER.filter(function (c) { return wx.pct[c] > 0; })
+      .sort(function (a, b) { return wx.pct[b] - wx.pct[a]; });
+    if (!shown.length) shown = ['土'];
+    var filledN = S.entries.filter(function (e) { return !e.fruit.hole; }).length;
+    html += '<div class="wtitle">你的收成</div>';
+    html += '<div class="wsub">' + (filledN === 0
+      ? '三关都空仓，所以只算权重、没有果实'
+      : '三株果实的颜色，取那一次行为的最高项') + '</div>';
+    html += '<div class="wuxing">' + shown.map(function (c) {
+      var n = S.entries.filter(function (e) { return !e.fruit.hole && e.fruit.color === c; }).length;
+      return '<div class="wrow"><span class="sw" style="background:' + COLORS[c].hex + '"></span>' +
+        '<span style="width:28px">' + c + '</span>' +
+        '<span class="bar"><i style="width:' + wx.pct[c] + '%;background:' + COLORS[c].hex + '"></i></span>' +
+        '<span class="pct">' + wx.pct[c] + '%</span>' +
+        '<span class="fnum">' + (n ? n + ' 株' : '—') + '</span></div>';
+    }).join('') + '</div>';
+
+    html += '<div class="card"><h3>卡点 · 该练哪一步</h3><div class="kadname">' + kad[0] + '</div><p>' + kad[1] + '</p>';
+    html += '<div class="ev">' + S.entries.map(function (e) {
+      return '<span>' + e.stageId + '｜' + (e.pos === 0 ? '空仓' : e.pos + '%') +
+        '｜浇' + e.probes.length + '｜' + (e.loose ? '松土' : '—') + '｜' + (e.stopLoss ? '篱笆' : '—') + '</span>';
+    }).join('') + '</div></div>';
+
+    html += '<div class="card"><h3>给你练这一件 · ' + dominant + ' × ' + FORMS[form].n.split(' · ')[0] + '</h3>';
+    html += '<div class="kadname">' + task + '</div>';
+    var noKad = kad[0] === '这一局没抓到明显卡点';
+    html += '<p>用你偏好的题材（<b>' + dominant + '</b>），' +
+      (noKad ? '把已经做对的那一步做深' : '练你不擅长的那一步（<b>' + kad[0] + '</b>）') + '，' +
+      (totalProbes === 0 ? '而这三次你一次水都没浇。' : '这三次你一共浇了 ' + totalProbes + ' 次水。') + '</p>';
+    html += '<div class="meta"><span>6 分钟</span><span>Panda Data 近 5 年日线</span><span>做完地里多一株</span></div>';
+    html += '</div>';
+
+    html += '<div class="card dimcard"><h3>留了一畦地</h3><p>回来收第二茬 → 解锁 <b>' +
+      (BEASTS.filter(function (b) { return b.k === dominant })[0] || BEASTS[0]).n + '</b> 的异色变体（外观彩蛋，不是更强）。</p></div>';
+
+    // 依据：分数只藏在这里，不摆到脸上
+    html += '<details class="evbox"><summary>查看依据（五行得分、营养、时间）</summary>';
+    html += '<div class="xian"><b>' + xian + '</b><span>/ 9 本局营养 · ' + FORMS[form].n + '</span></div>';
+    html += '<div class="xbar">' + [0, 1, 2, 3, 4, 5, 6, 7, 8].map(function (k) {
+      return '<i class="' + (k < xian ? 'on' : '') + '"></i>';
+    }).join('') + '</div>';
+    html += '<div class="ev">' + ORDER.map(function (c) {
+      return '<span>' + c + ' ' + (wx.raw[c] || 0).toFixed(1) + '（' + wx.pct[c] + '%）</span>';
+    }).join('') + '</div>';
+    html += '<div class="ev" style="margin-top:8px">' + S.entries.map(function (e) {
+      return '<span>' + e.stageId + '｜' + Math.round(e.decisionMs / 1000) + 's｜营养 ' + e.nutrition + '/3</span>';
+    }).join('') + '</div>';
+    html += '<p class="tiny">画像依据：' + S.entries.reduce(function (a, e) { return a + e.probes.length; }, 0) +
+      ' 次查数据、' + S.entries.filter(function (e) { return e.loose; }).length + ' 次验证假设、' +
+      S.entries.filter(function (e) { return e.stopLoss; }).length + ' 次立篱笆。与命理无关。</p>';
+    html += '</details>';
+
+    html += '<div style="text-align:center;margin-top:16px"><button class="btn ghost" id="againBtn">再玩一次</button></div>';
+
+    var res = $('#result');
+    res.innerHTML = html;
+    $('#againBtn').onclick = function () { location.reload(); };
+
+    var rf = $('#resultField');
+    RF_SEASON(rf);
+    S.entries.forEach(function (e, idx) { buildPlot(rf, idx); });
+    var rb = $('#beast').cloneNode(true);
+    rb.removeAttribute('id');
+    rb.removeAttribute('style');
+    rb.dataset.form = String(form);
+    rf.appendChild(rb);
+    switchScreen('result');
+    requestAnimationFrame(function () {
+      S.entries.forEach(function (e, idx) {
+        var pl = plotOf(rf, idx);
+        paint(pl, e.fruit, false, pl.clientHeight);
+      });
+    });
+  }
+
+  function RF_SEASON(rf) {
+    var s = getComputedStyle($('#field')).getPropertyValue('--sky1') || '#efe7d6';
+    var s2 = getComputedStyle($('#field')).getPropertyValue('--sky2') || '#e9e1d1';
+    var soil = getComputedStyle($('#field')).getPropertyValue('--soil') || '#6b4f36';
+    var soil2 = getComputedStyle($('#field')).getPropertyValue('--soil-dark') || '#543d29';
+    rf.style.background = 'linear-gradient(' + s.trim() + ' 0%, ' + s2.trim() + ' 26%, ' + soil.trim() + ' 26%, ' + soil2.trim() + ' 100%)';
+  }
+
+  /* ─────────── 屏幕切换 ─────────── */
+  function switchScreen(id) {
+    var list = document.querySelectorAll('.screen');
+    for (var i = 0; i < list.length; i++) list[i].classList.toggle('on', list[i].id === id);
+  }
+
+  /* ─────────── 启动 ─────────── */
+  function initPick() {
+    var host = $('#beastPick');
+    BEASTS.forEach(function (b) {
+      var btn = document.createElement('button');
+      btn.className = 'beastchip';
+      btn.innerHTML = '<svg viewBox="0 0 44 40" width="30" height="27" fill="' + COLORS[b.k].hex + '">' +
+        '<path d="M7 34 Q3 23 13 20 Q22 17 29 22 Q35 27 33 34 Z"/>' +
+        '<circle cx="33" cy="17" r="7.2"/>' +
+        '<path d="M28 11 L26 5 L32 9 Z"/><path d="M37 11 L39 5 L41 10 Z"/>' +
+        '<path d="M8 24 Q1 20 3 11" fill="none" stroke="' + COLORS[b.k].hex + '" stroke-width="2.6" stroke-linecap="round"/></svg>' +
+        '<span class="nm">' + b.n + '</span><span class="wx">' + b.k + ' · ' + b.d + '</span>';
+      btn.onclick = function () {
+        S.self = b.k;
+        startRun();
+      };
+      host.appendChild(btn);
+    });
+  }
+
+  function startRun() {
+    $('#pick').classList.remove('on');
+    switchScreen('stage');
+    var field = $('#field');
+    if (!field.querySelector('.plot')) { buildPlot(field, 0); buildPlot(field, 1); buildPlot(field, 2); }
+    bindCare();
+    requestAnimationFrame(function () { resizeCanvas(); enterStage(0); });
+  }
+
+  $('#startBtn').onclick = function () {
+    if ($('#pick').classList.contains('on')) return;
+    $('#pick').classList.add('on');
+  };
+
+  initPick();
+  window.addEventListener('resize', function () { resizeCanvas(); drawChart(rowsNow().length); repaintField(); });
+})();
