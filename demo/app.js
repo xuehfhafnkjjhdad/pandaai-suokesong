@@ -1,6 +1,6 @@
 /* 五行灵兽 · 决策即播种 demo v0.2
  * 基线：《开发基线 v1.0 · 第一版系统 + 秒级节奏》
- *   第一版要素全留：四季（一关一季）/ 农事动作(浇水·松土·篱笆) / 双属性果实 /
+ *   第一版要素全留：四季（一关一季）/ 农事动作(查数据·松土·篱笆) / 双属性果实 /
  *                  三阶成长 / 自选幼兽→行为发现 / 15 格矩阵 / 血脉变体留位
  *   唯一改动：生长与喂养压到秒级（每关 2.8s，关末连喂 2.8s）
  * 注意：本文件的五行/营养计算是【内联简化版】，只为 demo 自洽；
@@ -10,11 +10,11 @@
   'use strict';
 
   var PD = window.PD;
+  var Journey = window.GardenJourney;
   var S = {
     i: 0, pos: 0, cash: 100000, entries: [],
     probes: [], locked: false, timers: [], chartToken: 0,
     stageStart: 0, self: null, fed: 0, rows: [], extra: null, pendingReveal: null,
-    care: { loose: false, hedge: false },
     round: 0            // 第几轮。0 = 首轮；≥1 时换一套决策选项，避免重玩完全重复
   };
 
@@ -88,10 +88,10 @@
   };
 
   var PROBES = [
-    { k: 'rank5y', t: '5年分位', f: function (m) { return m.pct_rank_5y + '%' } },
-    { k: 'drawdown', t: '3年回撤', f: function (m) { return m.drawdown_3y + '%' } },
-    { k: 'vol_ratio', t: '量能倍数', f: function (m) { return m.vol_ratio_20 + '倍' } },
-    { k: 'amp_20', t: '20日振幅', f: function (m) { return m.amp_20 + '%' } }
+    { k: 'rank5y', t: '5年分位', d: '查位置：当前点位在近五年处于什么水平', f: function (m) { return m.pct_rank_5y + '%' } },
+    { k: 'drawdown', t: '3年回撤', d: '查跌幅：距离近三年最高点跌了多少', f: function (m) { return m.drawdown_3y + '%' } },
+    { k: 'vol_ratio', t: '量能倍数', d: '查热度：当日成交量是近20日均量的几倍', f: function (m) { return m.vol_ratio_20 + '倍' } },
+    { k: 'amp_20', t: '20日振幅', d: '查波动：近20日最高价相对最低价的涨幅', f: function (m) { return m.amp_20 + '%' } }
   ];
 
   var SEASON = { 春: 'spring', 夏: 'summer', 秋: 'autumn', 冬: 'winter' };
@@ -131,23 +131,15 @@
   // 农事与指标的说明文案（给不熟悉术语的人看）
   var HELP = {
     water: {
-      t: '浇水 · 查数据',
+      t: '先看线索，再做决定',
       b: '每点一个指标，就等于"我去看了一眼数据"，土上会湿一分。<br><br>' +
         '这不是让你算，是看你会不会<b>先看再动</b>。一次不查就下单，和查了三项才下单，' +
         '在最后画像里是完全不同的两种人。查得多不代表更准，但<b>一次不看</b>一定更危险。<br><br>' +
         '<b>四个指标分别在说什么：</b><br>' +
         '· <b>5年分位</b>：现在的点位，在近五年里排第几。0% 就是五年最低。<br>' +
         '· <b>3年回撤</b>：从近三年最高点跌下来多少。<br>' +
-        '· <b>量能倍数</b>：今天成交额是近 20 天平均的几倍。大于 1.5 说明有人在抢。<br>' +
-        '· <b>20日振幅</b>：最近 20 天每天平均上下折腾多少。越大越颠。'
-    },
-    care: {
-      t: '松土 / 立篱笆 在做什么',
-      b: '<b>松土 = 我在验证一个假设。</b><br>点它不等于做了任何交易，它是给系统的一句话：' +
-        '"这次我不是凭感觉，我心里有一个想法，想去验证它。"土被翻过的地方，说明你想过为什么。<br><br>' +
-        '<b>立篱笆 = 提前想好亏到哪就撤。</b><br>相当于设置止损单。篱笆扎下去，说明你在进场之前就想好了退路。' +
-        '这两件事都不会让你多赚，但在画像里，它们是"有没有方法"和"有没有纪律"的直接证据。<br><br>' +
-        '两个都可以不点——不点也是一种选择，只是地里不会留下这些痕迹。'
+        '· <b>量能倍数</b>：今天成交量是近 20 日平均成交量的几倍。大于 1 表示成交更活跃，不能单独判断涨跌。<br>' +
+        '· <b>20日振幅</b>：近 20 日最高价相对最低价的涨幅，反映这段时间的波动范围。'
     },
     actions: {
       t: '这三个按钮是什么',
@@ -178,12 +170,25 @@
       '<div class="wet"></div>' +
       '<div class="loose"><i></i><i></i><i></i></div>' +
       '<div class="hedge"><span></span><span></span></div>' +
-      '<div class="stem"></div>' +
+      '<div class="plant-shadow"></div>' +
+      '<div class="stem"><svg viewBox="0 0 84 140" preserveAspectRatio="none" aria-hidden="true"><path class="vine-edge" d="M42 140 C29 113 54 92 43 68 C35 49 47 25 42 6"/><path class="vine-light" d="M41 139 C28 113 53 92 42 68 C34 49 46 25 41 6"/><path class="twig" d="M42 98 Q24 94 15 77 M43 65 Q61 61 69 43"/><path class="blade lower" d="M35 102 Q5 104 8 77 Q33 75 35 102Z"/><path class="blade upper" d="M46 68 Q49 38 75 40 Q76 65 46 68Z"/><path class="vein" d="M13 83 L32 98 M50 63 L69 45"/></svg></div>' +
       '<div class="leaf"></div>' +
       '<div class="fruit"></div>' +
       '<div class="seed"></div>' +
       '<div class="dust"></div>';
     host.appendChild(p);
+    p.tabIndex = 0;
+    p.setAttribute('role', 'button');
+    p.setAttribute('aria-label', '查看第' + (idx + 1) + '关的行为记录');
+    function inspectPlot() {
+      var e = S.entries[idx];
+      if (!e) { sceneFeedback('这里留给你的下一次决定'); return; }
+      var text = '第' + (idx + 1) + '关 · 仓位 ' + e.pos + '% · 查了 ' + e.probes.length + ' 项数据' + (e.stopLoss ? ' · 考虑了止损' : '');
+      if (host.id === 'field') sceneFeedback(text);
+      else { $('#helpPop').innerHTML = '<h4>这株植物的来历</h4><div class="hb">' + text + '</div><button class="btn" id="helpClose">知道了</button>'; $('#helpMask').classList.add('on'); $('#helpPop').classList.add('on'); $('#helpClose').onclick = function () { $('#helpMask').classList.remove('on'); $('#helpPop').classList.remove('on'); }; }
+    }
+    p.onclick = inspectPlot;
+    p.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inspectPlot(); } };
     return p;
   }
 
@@ -211,6 +216,8 @@
     var h = fh * heightRatio(f.pos != null ? f.pos : 0);
     var size = SIZE[f.size] || 22;
     var c = COLORS[f.color];
+    plot.classList.toggle('dry-plant', f.leaf === 'dry');
+    plot.style.setProperty('--plant-tilt', ((Number(plot.dataset.i) % 3 - 1) * 4) + 'deg');
     var fruitAt = function () {
       stem.style.height = h + 'px';
       leaf.style.bottom = (base + h * 0.52) + 'px';
@@ -336,14 +343,26 @@
   function setForm(n, flash) {
     var f = formOf(n);
     var el = $('#formName'), beast = $('#beast');
+    var previous = beast.dataset.form;
     el.textContent = FORMS[f].n;
     beast.dataset.form = String(f);
+    var journeyTitle = $('#journeyGoal');
+    if (journeyTitle && journeyTitle.classList.contains('on')) journeyTitle.textContent = '成长形态 · ' + FORMS[f].n;
     // 有立绘时按阶换图：_1 潜力 / _2 成长 / _3 定形
     var art = $('#beastArt');
     if (art && BEAST_IMG_ON && S.self) {
       var src = beastOf(S.self).img.replace(/_1\.png$/, '_' + (f + 1) + '.png');
       if (art.getAttribute('src') !== src) art.setAttribute('src', src);
+      art.alt = beastOf(S.self).n + ' · ' + FORMS[f].n;
     }
+    if (flash && previous !== String(f)) {
+      beast.classList.remove('evolving');
+      void beast.offsetWidth;
+      beast.classList.add('evolving');
+      $('#feedTag').innerHTML = '<b>' + FORMS[f].n + '</b>吸收了你认真做决定的光';
+      $('#feedTag').classList.add('on');
+    }
+    if (!flash) beast.classList.remove('evolving');
     if (flash) {
       el.parentNode.classList.remove('up');
       void el.parentNode.offsetWidth;
@@ -365,25 +384,26 @@
 
   function enterStage(idx) {
     S.i = idx; S.probes = []; S.locked = false; S.stageStart = performance.now();
-    S.care = { loose: false, hedge: false };
     S.rows = viewRows(); S.extra = null;
     var st = PD.stages[idx];
     var field = $('#field');
     field.dataset.season = SEASON[st.name.charAt(0)] || 'spring';
+    field.classList.remove('growing');
+    $('#sceneGuide').innerHTML = '<span class="step on">观察</span><span class="sep">›</span><span class="step">决定</span><span class="sep">›</span><span class="step">生长</span>';
+    $('#beast').style.left = '82%';
 
     $('#console').classList.remove('collapsed');
     // 决策按钮的说明入口：不做成新手引导页，点"?"才知道，不打断节奏
-    $('#askline').innerHTML = (S.round > 0
-      ? '第 ' + (S.round + 1) + ' 轮 · 同样的行情，' + (S.round % 2 === 1 ? '这次换成另一套选项。' : '这次换回第一套选项。')
-      : '你可以先照料一下，也可以直接决定。') +
-      '<i class="qbtn" data-help="actions">?</i>';
+    // 显式构造可见快照，出题器无法接触后续行情。
+    S.question = window.MarketQuestion.build({id:st.id, date:st.date, metrics:st.metrics, kline:st.kline}, S.pos, S.round);
+    $('#askline').innerHTML = '<small class="market-source">PandaData · 沪深300 · ' + fmtDate(st.date) + ' 历史回放</small><p class="market-analysis">' + S.question.analysis + '</p><strong class="market-question">' + S.question.question + '</strong><i class="qbtn" data-help="actions">?</i>';
+    $('#decisionReview').hidden = true;
     $('#stageName').textContent = stageTitle(st);
     $('#stageDate').textContent = fmtDate(st.date);
     var dots = document.querySelectorAll('.dots i');
     for (var d = 0; d < dots.length; d++) dots[d].classList.toggle('on', d <= idx);
 
     setForm(S.fed, false);
-    resetCare();
     renderProbes(st);
     renderActions(st);
     startTimer();
@@ -413,45 +433,58 @@
     });
   }
 
-  function resetCare() {
-    var loose = $('#careLoose'), hedge = $('#careHedge');
-    loose.classList.remove('done'); hedge.classList.remove('done');
-    loose.disabled = false; hedge.disabled = false;
-    var pl = plotOf($('#field'), S.i);
-    if (pl) {
-      $('.loose', pl).classList.remove('on');
-      // 篱笆不在这里清，植株留痕属于上一次的记录
-    }
-  }
-
   function renderProbes(st) {
     var host = $('#probes'); host.innerHTML = '';
     $('#carehead').innerHTML = careHeadHtml(0);
     PROBES.forEach(function (p) {
       var b = document.createElement('button');
       b.className = 'probe';
-      b.innerHTML = p.t;
+      b.type = 'button';
+      b.setAttribute('aria-describedby', 'probe-desc-' + p.k);
+      b.innerHTML = '<span>' + p.t + '</span><small class="probe-value" aria-live="polite">点击查验</small>';
       b.onclick = function () {
         if (S.locked) return;
         if (S.probes.indexOf(p.k) < 0) S.probes.push(p.k);
         b.classList.add('used');
-        b.innerHTML = p.t + '<small>' + p.f(st.metrics) + '</small>';
+        $('.probe-value', b).textContent = p.f(st.metrics);
         waterFeedback();
+        sceneFeedback(p.t + ' · ' + p.f(st.metrics));
       };
-      host.appendChild(b);
+      var item = document.createElement('div');
+      item.className = 'probe-item';
+      var desc = document.createElement('p');
+      desc.id = 'probe-desc-' + p.k;
+      desc.className = 'probe-desc';
+      desc.textContent = p.d;
+      item.appendChild(b); item.appendChild(desc);
+      host.appendChild(item);
     });
   }
 
+  var toastTimer;
+  function sceneFeedback(text) {
+    var toast = $('#sceneToast');
+    toast.textContent = text;
+    toast.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toast.classList.remove('on'); }, 2200);
+  }
+  $('#petBtn').onclick = function () {
+    if (S.locked) return;
+    var beast = $('#beast');
+    beast.classList.remove('nod');
+    void beast.offsetWidth;
+    beast.classList.add('nod');
+    setTimeout(function () { beast.classList.remove('nod'); }, 550);
+    sceneFeedback(['我陪你看清楚，再决定。', '这一次，你想验证什么？', '不着急，每种选择都会留下痕迹。'][Math.floor(Math.random() * 3)]);
+  };
+
   function careHeadHtml(n) {
-    var txt = n === 0
-      ? '每查一项数据，土上就湿一分'
-      : '已查 ' + n + ' 项' + (n >= 3 ? ' · 查得挺细' : '');
-    // 左：浇水的说明入口；右：农事（松土/篱笆）的说明入口。合成一行省垂直空间
-    return '<span class="ch-l"><b>浇水</b> · ' + txt + '<i class="qbtn" data-help="water">?</i></span>' +
-      '<span class="ch-r">农事<i class="qbtn" data-help="care">?</i></span>';
+    return '<span class="ch-l"><b>查验行情</b><i class="qbtn" data-help="water">?</i></span>' +
+      '<span class="ch-r">' + (n ? '已查 ' + n + ' / 4 项' : '点击指标，查看本轮数据') + '</span>';
   }
 
-  // 浇水回执：≤0.15s，土立刻湿
+  // 查数据回执：≤0.15s，土立刻湿
   function waterFeedback() {
     var pl = plotOf($('#field'), S.i);
     var n = S.probes.length;
@@ -471,16 +504,7 @@
 
   function renderActions(st) {
     var host = $('#actions'); host.innerHTML = '';
-    var group = S.pos > 0 ? (st.actions.holding || st.actions.default) : (st.actions.default || st.actions.empty);
-    // 第二轮起换一套决策姿势，避免"重玩还是那三个按钮"；之后单双轮交替，不会每轮都一样
-    var alt = ALT_ACTIONS[st.id];
-    if (S.round % 2 === 1 && alt) {
-      if (Object.prototype.toString.call(alt) === '[object Array]') group = alt;
-      else {
-        var g2 = S.pos > 0 ? alt.holding : alt.empty;
-        if (g2 && g2.length) group = g2;
-      }
-    }
+    var group = S.question.options;
     group.forEach(function (a) {
       var b = document.createElement('button');
       b.className = 'act';
@@ -490,33 +514,18 @@
     });
   }
 
-  function bindCare() {
-    $('#careLoose').onclick = function () {
-      if (S.locked || S.care.loose) return;
-      S.care.loose = true;
-      this.classList.add('done'); this.disabled = true;
-      var pl = plotOf($('#field'), S.i);
-      if (pl) $('.loose', pl).classList.add('on');   // 0.18s 回执
-    };
-    $('#careHedge').onclick = function () {
-      if (S.locked || S.care.hedge) return;
-      S.care.hedge = true;
-      this.classList.add('done'); this.disabled = true;
-      var pl = plotOf($('#field'), S.i);
-      if (pl) $('.hedge', pl).classList.add('on');   // 0.18s 回执
-    };
-  }
-
   function decide(st, a) {
     if (S.locked) return;
     S.locked = true;
+    $('#field').classList.add('growing');
+    $('#sceneGuide').innerHTML = '<span class="step">观察</span><span class="sep">›</span><span class="step on">决定已落地</span><span class="sep">›</span><span class="step on">生长中</span>';
     S.chartToken++;
     var prev = S.pos;
     S.pos = resolvePos(a.positionPct, S.pos);
-    var btns = document.querySelectorAll('.act, .probe, .carebtn');
+    var btns = document.querySelectorAll('.act, .probe');
     for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
     $('#timerFill').style.transition = 'none';
-    var hedge = S.care.hedge || !!a.stopLossSet;
+    var hedge = !!a.stopLossSet;
     var hint = $('#fieldHint'); if (hint) hint.classList.remove('on');
     // 收起后的那 2.8 秒，面板空出来一大块；用"播种→抽芽→结果→揭晓"四拍把它填成生长进度，
     // 而不是留一片白。空仓就写一行，不假装在长。
@@ -537,23 +546,24 @@
 
     var n = S.probes.length;
     var waterLv = n === 0 ? 0 : n <= 2 ? 1 : 2;
-    var shine = Math.min(3, 1 + (waterLv >= 1 ? 1 : 0) + ((S.care.loose || hedge) ? 1 : 0));
-    var nutrition = Math.min(3, waterLv + (S.care.loose ? 1 : 0) + (hedge ? 1 : 0));
+    var shine = Math.min(3, 1 + (waterLv >= 1 ? 1 : 0) + (hedge ? 1 : 0));
+    var nutrition = Math.min(3, waterLv + (hedge ? 1 : 0));
 
     var entry = {
       stageId: st.id, actionId: a.id, code: a.code,
+      question: S.question.question, marketAnalysis: S.question.analysis, actionLabel: a.label,
       pos: S.pos, prevPos: prev, probes: S.probes.slice(),
-      stopLoss: hedge, loose: S.care.loose,
+      stopLoss: hedge, loose: false,
       decisionMs: Math.round(performance.now() - S.stageStart),
       endPct: st.reveal.endPct, pnl: pnl,
       fruit: {
-        color: colorOf(a.code, n, S.care.loose),
+        color: colorOf(a.code, n, false),
         size: Math.abs(st.reveal.endPct) >= 5 ? 3 : Math.abs(st.reveal.endPct) >= 2 ? 2 : 1,
         shine: shine,
         pos: S.pos,
         leaf: (n === 0 && (a.code === 'A5' || a.code === 'A9' || a.code === 'E2')) ? 'dry' : 'ok',
         hedge: hedge,
-        loose: S.care.loose,
+        loose: false,
         wet: waterLv,
         hole: S.pos === 0
       },
@@ -562,13 +572,27 @@
     S.entries.push(entry);
     S.pendingReveal = st.reveal.kline || [];
 
-    grow(entry, function () {
-      if (S.i < PD.stages.length - 1) {
-        setTimeout(function () { enterStage(S.i + 1); }, 260);
-      } else {
-        feed(function () { showResult(); });
-      }
-    });
+    grow(entry, function () { showDecisionReview(st, entry); });
+  }
+
+  function showDecisionReview(st, entry) {
+    var box = $('#decisionReview');
+    var scores = calcWuxing([entry]).raw;
+    var animal = beastOf(ORDER.slice().sort(function (a, b) { return scores[b] - scores[a]; })[0]);
+    var explanations = {A1:'你选择执行退出条件，体现规则意识。', D1:'你在参与前安排退出条件，体现纪律意识。', A3:'你主动降低敞口，体现风险控制。', A4:'你愿意承受波动等待反弹；是否长期主义，还需要长期依据。', A5:'你在涨势加速时提高参与，体现进攻和动量偏好。', A9:'你在信号尚不明确时重仓，体现较强的冒险倾向。', A6:'你用较小仓位验证想法，体现试探和验证意识。', A7:'你选择等待更多证据，体现谨慎；多次观察才能区分研究与回避。', A10:'你在上涨时维持原仓位，体现克制。', A11:'你在急跌后尝试反弹，体现逆势冒险倾向。', E2:'你在下跌时增加敞口，体现较强的风险承担倾向。'};
+    var outcome = entry.pos === 0 ? '空仓 · 本段收益 ¥0' : (entry.pnl >= 0 ? '本段赚 ' : '本段亏 ') + '¥' + Math.abs(Math.round(entry.pnl)).toLocaleString('zh-CN');
+    box.innerHTML = '<small>选择后的真实行情 · ' + fmtDate(st.reveal.start) + ' — ' + fmtDate(st.reveal.end) + '</small><h3 class="' + (entry.pnl < 0 ? 'loss' : 'gain') + '">' + outcome + '</h3><p>指数从 ' + st.metrics.close.toFixed(2) + ' 到 ' + st.reveal.endClose.toFixed(2) + ' 点（' + (entry.endPct >= 0 ? '+' : '') + entry.endPct + '%）。按本关模拟资金 × ' + entry.pos + '% 仓位计算，不含费用。</p><p><b>这次行为更接近' + animal.n + ' · ' + animal.tag.split(' · ')[0] + '</b><br>' + (explanations[entry.code] || '这次选择已加入你的行为记录。') + ' 查了' + entry.probes.length + '项数据' + (entry.stopLoss ? '，有退出准备。' : '。') + '</p><small>这是本次行为线索，完整画像会累计多次选择；盈亏不参与性格评分。</small><button type="button" class="btn" id="reviewNext">' + (S.i < PD.stages.length - 1 ? '继续下一段行情' : '查看累计动物画像') + '</button>';
+    box.hidden = false;
+    var advanced = false;
+    $('#reviewNext').onclick = function () {
+      // 触屏连点、键盘重复激活只推进一次，防止跳关或重复喂养。
+      if (advanced) return;
+      advanced = true;
+      this.disabled = true;
+      box.hidden = true;
+      if (S.i < PD.stages.length - 1) enterStage(S.i + 1);
+      else feed(function () { showResult(); });
+    };
   }
 
   function colorOf(code, probesN, loose) {
@@ -617,6 +641,7 @@
       return;
     }
 
+    paint(plot, entry.fruit, true, fh);
     // 0.2s 播种
     at(200, function () { seed.classList.add('drop'); dust.classList.add('puff'); beat(0); });
     // 0.5s 抽芽（株高由仓位决定）
@@ -629,7 +654,8 @@
       leaf.style.transition = 'bottom .42s ease, opacity .3s';
       leaf.style.bottom = (base + h * .52) + 'px';
       leaf.classList.add('ok');
-      if (entry.fruit.leaf === 'dry') leaf.classList.add('dry');
+      plot.classList.add('sprouting');
+      if (entry.fruit.leaf === 'dry') plot.classList.add('dry-plant');
     });
     // 0.9s 结果
     at(900, function () {
@@ -669,7 +695,7 @@
     var v = $('.v', box), kk = $('.k', box);
     v.textContent = '0';
     v.style.color = entry.endPct >= 0 ? '#c0392b' : '#3f7d58';
-    kk.textContent = entry.pos === 0 ? '这一关你没有持仓' : (entry.pos >= 70 ? '你的浮亏／浮盈' : '你的收益');
+    kk.textContent = entry.pos === 0 ? '这一关你没有持仓' : '本段模拟收益 · 元';
     box.classList.add('show');
     var t0 = performance.now(), dur = 620;
     (function tick(now) {
@@ -750,9 +776,10 @@
           f.classList.add('dim');
           var r = f.getBoundingClientRect(), fr = field.getBoundingClientRect();
           sparks(pl, e.fruit.color, r.left - fr.left + r.width / 2, r.top - fr.top);
-          S.fed += e.nutrition;
-          setForm(S.fed, true);
         }
+        // 成长只取过程营养；空仓也可能有充分查验，不能被果实外观截断。
+        S.fed += e.nutrition;
+        setForm(S.fed, true);
       });
       at(800, function () { i++; next(); });
     }
@@ -760,9 +787,10 @@
   }
 
   /* ─────────── 结算 ─────────── */
-  function calcWuxing() {
+  function calcWuxing(entries) {
+    entries = entries || S.entries;
     var w = { 金: 0, 木: 0, 水: 0, 火: 0, 土: 0 };
-    S.entries.forEach(function (e) {
+    entries.forEach(function (e) {
       var r = W[e.code];
       if (r) for (var k in r) w[k] += r[k];
       var n = e.probes.length;
@@ -798,36 +826,43 @@
     if (slN >= 1 && emptyNoSL === 0 && maxProbe >= 2 && firePct < 35) {
       return ['这一局没抓到明显卡点', '先查后动、扎过篱笆、仓位也没失控。特征太干净，反而不好下判断——多玩几局再看。', top[0], dPct];
     }
-    if (emptyNoSL >= 1 && totalProbes >= 3) return ['不敢下判断', '数据你浇了 ' + totalProbes + ' 次，但有 ' + emptyNoSL + ' 关始终没有真的下手。', top[0], dPct];
+    if (emptyNoSL >= 1 && totalProbes >= 3) return ['不敢下判断', '你查了 ' + totalProbes + ' 项数据，但有 ' + emptyNoSL + ' 关始终没有真的下手。', top[0], dPct];
     if (sameAction) return ['只做熟悉的', '三关用了同一个动作——你的动作高度重复。', top[0], dPct];
-    if (firePct >= 40 && totalProbes <= 2) return ['不会验证', '你的收成偏赤红，但几乎没浇过一次水就动手了。', top[0], dPct];
+    if (firePct >= 40 && totalProbes <= 2) return ['不会验证', '你的收成偏赤红，但几乎没查过数据就动手了。', top[0], dPct];
     if (dPct < 35) return ['想法不收敛', '三株颜色都不一样——你没有主线，每次都在用不同的方式做决定。', top[0], dPct];
-    if (waterPct >= 30 && maxProbe <= 1) return ['容易接受结论', '你浇过水，但每关只看了一眼就下了结论。', top[0], dPct];
+    if (waterPct >= 30 && maxProbe <= 1) return ['容易接受结论', '你查过数据，但每关只看了一项就下了结论。', top[0], dPct];
     if (heavyN >= 2) return ['习惯用重仓表态', '三关的仓位都压得很满——你用仓位表达判断，而不是用依据。', top[0], dPct];
     return ['证据还不够', '这一局的行为太杂，没有一个能站住的形状。保留判断，比硬贴一个标签更诚实。', top[0], dPct];
   }
 
   function showResult() {
-    var wx = calcWuxing();
+    var evidence = Journey ? Journey.profileEvidence(S.entries) : { entries: S.entries, rounds: 1, firstRound: 1 };
+    var wx = calcWuxing(evidence.entries);
     var dx = diagnose();
-    var kad = [dx[0], dx[1]], dominant = dx[2], dPct = dx[3];
+    var dominant = ORDER.slice().sort(function (a, b) { return wx.pct[b] - wx.pct[a]; })[0];
+    var kad = [dx[0], dx[1]], dPct = wx.pct[dominant];
+    var scope = '第 ' + evidence.firstRound + '–' + (S.round + 1) + ' 轮 · ' + evidence.rounds + ' 轮累计 · ' + evidence.entries.length + ' 次决定';
     var xian = S.entries.reduce(function (a, e) { return a + e.nutrition; }, 0);
     var form = formOf(xian);
     var task = MATRIX[dominant][form];
+    if (Journey) Journey.commit(S.entries, dominant, FORMS[form].n);
     var totalProbes = S.entries.reduce(function (a, e) { return a + e.probes.length; }, 0);
     var heavyN = S.entries.filter(function (e) { return e.pos >= 70; }).length;
 
     // 自我判定 vs 行为显示 —— 对外只说动物，不出现五行
     var same = S.self && S.self === dominant;
     var real = beastOf(dominant);
+    S.nextSelf = dominant;
+    var portrait = real.img.replace(/_1\.png$/, '_' + (form + 1) + '.png');
     var selfLine = !S.self ? '' : (same
-      ? '你选的是 <b>' + beastOf(S.self).n + '</b>，三关走下来，你的行为也确实是 <b>' + real.n + '</b> 这一类 —— 你挺了解自己。'
+      ? '你选的是 <b>' + beastOf(S.self).n + '</b>，累计记录中，你的行为也确实是 <b>' + real.n + '</b> 这一类 —— 你挺了解自己。'
       : '你以为自己是 <b>' + beastOf(S.self).n + '</b>，但三关的行为更像 <b>' + real.n + '</b> —— 这是这次最大的发现。');
 
     var html = '';
     html += '<h2>这是你这三关的地</h2>';
     html += '<div class="sub">' + PD.meta.story + '｜同一块地，三株收成</div>';
     html += '<div id="resultField"></div>';
+    html += '<div class="profile-scope" data-animal="' + dominant + '" data-form="' + form + '" data-rounds="' + evidence.rounds + '" data-decisions="' + evidence.entries.length + '"><img class="profile-portrait" src="' + portrait + '" alt="' + real.n + ' · ' + FORMS[form].n + '"><div class="profile-copy"><b>你的动物画像 · ' + real.n + '</b><span>' + FORMS[form].n + '</span><span>' + scope + '</span><small>画像随累计行为更新；下一轮由' + real.n + '陪你继续。本轮成长依据三个决定。</small></div></div>';
 
     // 果实讲解图：紧贴田地，说清颜色/大小/光泽各代表什么
     html += '<div class="fnote"><div class="fnh">这几颗果实怎么读</div>';
@@ -860,10 +895,8 @@
       .sort(function (a, b) { return wx.pct[b] - wx.pct[a]; });
     if (!shown.length) shown = ['土'];
     var filledN = S.entries.filter(function (e) { return !e.fruit.hole; }).length;
-    html += '<div class="wtitle">你的收成</div>';
-    html += '<div class="wsub">' + (filledN === 0
-      ? '三关都空仓，所以只算权重、没有果实'
-      : '三株果实的颜色，取那一次行为的最高项') + '</div>';
+    html += '<div class="wtitle">累计行为分布</div>';
+    html += '<div class="wsub">' + scope + '；右侧株数只统计本轮收成。</div>';
     html += '<div class="wuxing">' + shown.map(function (c) {
       var n = S.entries.filter(function (e) { return !e.fruit.hole && e.fruit.color === c; }).length;
       return '<div class="wrow">' +
@@ -877,7 +910,7 @@
     html += '<div class="card"><h3>卡点 · 该练哪一步</h3><div class="kadname">' + kad[0] + '</div><p>' + kad[1] + '</p>';
     html += '<div class="ev">' + S.entries.map(function (e) {
       return '<span>' + stageLabel(e.stageId) + '｜' + (e.pos === 0 ? '空仓' : e.pos + '%') +
-        '｜浇' + e.probes.length + '｜' + (e.loose ? '松土' : '—') + '｜' + (e.stopLoss ? '篱笆' : '—') + '</span>';
+        '｜查数据 ' + e.probes.length + ' 项' + (e.stopLoss ? '｜有止损安排' : '') + '</span>';
     }).join('') + '</div></div>';
 
     html += '<div class="card"><h3>给你练这一件 · ' + real.n + ' × ' + FORMS[form].n.split(' · ')[0] + '</h3>';
@@ -885,12 +918,9 @@
     var noKad = kad[0] === '这一局没抓到明显卡点';
     html += '<p>用你偏好的题材（<b>' + real.n + '</b>），' +
       (noKad ? '把已经做对的那一步做深' : '练你不擅长的那一步（<b>' + kad[0] + '</b>）') + '，' +
-      (totalProbes === 0 ? '而这三次你一次水都没浇。' : '这三次你一共浇了 ' + totalProbes + ' 次水。') + '</p>';
+      (totalProbes === 0 ? '这三次你还没有查过数据。' : '这三次你一共查了 ' + totalProbes + ' 项数据。') + '</p>';
     html += '<div class="meta"><span>6 分钟</span><span>Panda Data 近 5 年日线</span><span>做完地里多一株</span></div>';
     html += '</div>';
-
-    html += '<div class="card dimcard"><h3>留了一畦地</h3><p>回来收第二茬 → 解锁 <b>' +
-      real.n + '</b> 的异色变体（外观彩蛋，不是更强）。</p></div>';
 
     // 依据：分数只藏在这里，不摆到脸上
     html += '<details class="evbox"><summary>查看依据（偏好分布、营养、时间）</summary>';
@@ -904,12 +934,13 @@
     html += '<div class="ev" style="margin-top:8px">' + S.entries.map(function (e) {
       return '<span>' + stageLabel(e.stageId) + '｜' + Math.round(e.decisionMs / 1000) + 's｜营养 ' + e.nutrition + '/3</span>';
     }).join('') + '</div>';
-    html += '<p class="tiny">画像依据：' + S.entries.reduce(function (a, e) { return a + e.probes.length; }, 0) +
-      ' 次查数据、' + S.entries.filter(function (e) { return e.loose; }).length + ' 次验证假设、' +
-      S.entries.filter(function (e) { return e.stopLoss; }).length + ' 次立篱笆。与命理无关。</p>';
+    html += '<p class="tiny">累计画像依据（' + scope + '）：' + evidence.entries.reduce(function (a, e) { return a + e.probes.length; }, 0) +
+      ' 次查验数据、' +
+      evidence.entries.filter(function (e) { return e.stopLoss; }).length + ' 次设置止损。与命理无关。</p>';
     html += '</details>';
 
-    html += '<div class="againbar"><button class="btn" id="againBtn">再来一轮</button>' +
+    if (Journey) html += Journey.renderResult();
+    html += '<div class="againbar"><button class="btn" id="againBtn">带着新目标，再来一轮</button>' +
       '<p class="tiny" style="text-align:center;margin:8px 0 0">同样的三关行情，这次换成另一套选项</p></div>';
 
     var res = $('#result');
@@ -919,12 +950,6 @@
     var rf = $('#resultField');
     RF_SEASON(rf);
     S.entries.forEach(function (e, idx) { buildPlot(rf, idx); });
-    var rb = $('#beast').cloneNode(true);
-    rb.removeAttribute('id');
-    var ra = rb.querySelector('#beastArt'); if (ra) ra.removeAttribute('id');
-    rb.removeAttribute('style');
-    rb.dataset.form = String(form);
-    rf.appendChild(rb);
     switchScreen('result');
     requestAnimationFrame(function () {
       S.entries.forEach(function (e, idx) {
@@ -946,11 +971,11 @@
   function switchScreen(id) {
     var list = document.querySelectorAll('.screen');
     for (var i = 0; i < list.length; i++) list[i].classList.toggle('on', list[i].id === id);
+    window.scrollTo(0, 0);
   }
 
   /* ─────────── 启动 ─────────── */
-  // 立绘开关：把 beast_*.png 放进 demo/assets/ 之后改成 true。
-  // 现在还没有图，开着会发 5 个 404、控制台一片红，所以默认关掉走剪影。
+  // assets 中已接入五兽各三阶的透明立绘。
   var BEAST_IMG_ON = true;
 
   // 立绘未就位时的剪影占位：五只各不相同，免得看起来像同一只猫
@@ -978,6 +1003,13 @@
   function silOf(k) { return SILS[k] || SILS['金']; }
 
   function initPick() {
+    if (Journey && Journey.roundIndex()) {
+      var garden = document.createElement('details');
+      garden.className = 'garden-home';
+      garden.innerHTML = '<summary>打开我的花园 · 已完成 ' + Journey.roundIndex() + ' 轮</summary>' + Journey.renderHome();
+      $('#intro').appendChild(garden);
+      $('#startBtn').textContent = '继续养成 · 第 ' + (Journey.roundIndex() + 1) + ' 轮';
+    }
     var host = $('#beastPick');
     BEASTS.forEach(function (b) {
       var btn = document.createElement('button');
@@ -1010,23 +1042,24 @@
   }
 
   function startRun() {
-    S.round = 0;
+    S.round = Journey ? Journey.roundIndex() : 0;
+    if (Journey) { Journey.begin(); $('#journeyGoal').textContent = Journey.renderStage(); }
     $('#pick').classList.remove('on');
     $('#intro').classList.remove('picking');
     switchScreen('stage');
     var field = $('#field');
     if (!field.querySelector('.plot')) { buildPlot(field, 0); buildPlot(field, 1); buildPlot(field, 2); }
-    bindCare();
     requestAnimationFrame(function () { resizeCanvas(); enterStage(0); });
   }
 
   // 继续玩：不清页面，只清这一局的痕迹，换一套选项重来
   function restartRound() {
     clearTimers();
-    S.round++;
+    if (S.nextSelf) S.self = S.nextSelf;
+    S.round = Journey ? Journey.roundIndex() : S.round + 1;
+    if (Journey) { Journey.begin(); $('#journeyGoal').textContent = Journey.renderStage(); }
     S.i = 0; S.pos = 0; S.cash = 100000; S.entries = [];
     S.probes = []; S.locked = false; S.fed = 0; S.rows = []; S.extra = null; S.pendingReveal = null;
-    S.care = { loose: false, hedge: false };
     S.chartToken++;
     var fn = $('#formName'); if (fn) fn.textContent = FORMS[0].n;
     clearField();
@@ -1034,7 +1067,7 @@
     requestAnimationFrame(function () { resizeCanvas(); enterStage(0); });
   }
 
-  /* ─────────── 说明气泡（浇水 / 松土到底在干嘛） ─────────── */
+  /* ─────────── 说明气泡（查数据 / 松土到底在干嘛） ─────────── */
   function showHelp(key) {
     var h = HELP[key];
     var pop = $('#helpPop'), mask = $('#helpMask');

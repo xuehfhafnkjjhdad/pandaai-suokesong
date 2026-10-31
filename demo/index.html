@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#f4efe4">
-<title>五行灵兽 · 决策即播种（demo v0.2 · 第一版系统 + 秒级节奏）</title>
+<meta name="theme-color" content="#2c5e3c">
+<title>森林动物花园</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=garden09">
 </head>
 <body>
 <div id="app">
@@ -15,14 +15,14 @@
     <div class="blob"></div>
     <h1>我们不看你会不会赚钱<br>看你怎么做决定</h1>
     <p>三关都是真实发生过的行情，走的是同一条时间线。</p>
-    <p class="dim">每一关你做一个决定，地里就长出一株。</p>
+    <p class="dim">你的每一个行为，都会结出一颗果实。</p>
     <button class="btn" id="startBtn" style="margin-top:22px">开始</button>
     <div id="pick" class="pick">
       <p class="dim pkhead">先凭直觉选一只 —— 你觉得你是哪一种？</p>
       <div class="beasts" id="beastPick"></div>
       <p class="dim pkfoot">这一选只是对照，不参与任何判定</p>
     </div>
-    <p class="dim" style="margin-top:26px;font-size:11px">demo v0.3：第一版系统 · 生长压到 2.8 秒 · 美术为占位</p>
+    <p class="dim" style="margin-top:26px;font-size:11px">森林动物 · 三次决定，发现你的交易习惯</p>
   </section>
 
   <section class="screen" id="stage">
@@ -31,12 +31,18 @@
       <div class="dots"><i></i><i></i><i></i></div>
       <div class="hud-r"><span id="formName">潜力态 · 幼兽</span></div>
     </div>
+    <div id="journeyGoal" role="status">初次相遇 · 三次决定，种下第一畦地</div>
     <div id="chartWrap">
       <canvas id="chart"></canvas>
       <div id="captions"></div>
     </div>
     <div id="field" data-season="spring">
       <div class="skyline"></div>
+      <div id="sceneLabel">森林观察站</div>
+      <div id="previewTag">每个决定，都有回声</div>
+      <div id="sceneGuide" aria-label="本关进度"><span class="step on">观察</span><span class="sep">›</span><span class="step">决定</span><span class="sep">›</span><span class="step">生长</span></div>
+      <div id="sceneToast" role="status" aria-live="polite"></div>
+      <button id="petBtn" type="button">和动物打招呼</button>
       <div id="fieldHint">做一个决定，地里就长出一株</div>
       <div class="beast" id="beast">
         <img id="beastArt" class="beast-art" alt="">
@@ -54,13 +60,10 @@
     <div id="console">
       <div class="timerbar"><i id="timerFill"></i></div>
       <div class="askline" id="askline">你可以先照料一下，也可以直接决定。</div>
-      <div class="carehead" id="carehead">浇水 · 查一项数据，土上就湿一分</div>
+      <div class="carehead" id="carehead">查数据 · 先观察，再做决定</div>
       <div class="probes" id="probes"></div>
-      <div class="care" id="care">
-        <button class="carebtn" id="careLoose"><span class="t">松土</span><span class="s">我在验证一个假设</span></button>
-        <button class="carebtn" id="careHedge"><span class="t">立篱笆</span><span class="s">设一个止损</span></button>
-      </div>
       <div class="actions" id="actions"></div>
+      <div id="decisionReview" aria-live="polite" hidden></div>
     </div>
   </section>
 
@@ -72,6 +75,8 @@
 <div id="helpPop"></div>
 
 <script src="data.js"></script>
-<script src="app.js"></script>
+<script src="progression.js?v=garden09"></script>
+<script src="market-question.js?v=garden09"></script>
+<script src="app.js?v=garden09"></script>
 </body>
 </html>
