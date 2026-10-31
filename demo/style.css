@@ -100,6 +100,11 @@ body {
 
 .fruit { position: absolute; left: 50%; bottom: var(--ground); width: 18px; height: 18px; margin-left: -9px; border-radius: 50%;
   transform: scale(0); transition: transform .3s cubic-bezier(.34,1.56,.64,1), filter .5s, box-shadow .5s; }
+/* 野果的三处剪影钩子：果蒂 + 小叶，缩到 20px 才认得出是果子而不是圆点 */
+.fruit::before { content: ""; position: absolute; left: 50%; bottom: 84%; width: 2px; height: 30%; margin-left: -1px;
+  background: #5b452b; border-radius: 1px; }
+.fruit::after { content: ""; position: absolute; left: 54%; bottom: 94%; width: 46%; height: 34%;
+  background: #7d8b52; border-radius: 62% 62% 62% 0; transform: rotate(-18deg); }
 .fruit.on { transform: scale(1); }
 .fruit.dim { filter: brightness(.62) saturate(.7); box-shadow: none !important; }
 
