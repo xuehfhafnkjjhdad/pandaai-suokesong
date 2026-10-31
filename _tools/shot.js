@@ -16,18 +16,41 @@ const OUT = path.join(__dirname, '..', 'shots');
   page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); });
 
+  const shot = (n) => page.screenshot({ path: path.join(OUT, n) });
+
+  // 等到"下一关就绪"或"结果页出现"
+  async function waitAdvance(fromStage) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 15000) {
+      const s = await page.evaluate(() => ({
+        result: document.querySelector('#result') && document.querySelector('#result').classList.contains('on'),
+        stage: document.querySelector('#stageName').textContent,
+        acts: document.querySelectorAll('#actions .act').length
+      }));
+      if (s.result) return 'result';
+      if (s.stage !== fromStage && s.acts > 0) return s.stage;
+      await page.waitForTimeout(200);
+    }
+    return 'timeout';
+  }
+
+  const stageName = () => page.evaluate(() => document.querySelector('#stageName').textContent);
+
   await page.goto(URL, { waitUntil: 'load' });
   await page.waitForTimeout(400);
-  await page.screenshot({ path: path.join(OUT, '01-intro.png') });
+  await shot('01-intro.png');
 
   await page.click('#startBtn');
-  await page.waitForTimeout(1600);
-  await page.screenshot({ path: path.join(OUT, '02-look.png') });
+  await page.waitForTimeout(600);
+  await shot('01b-pick.png');
 
-  // 第一关：查 1 项，然后决策
+  await page.click('#beastPick .beastchip:nth-child(1)');
+  await page.waitForTimeout(1400);
+  await shot('02-look.png');
+
   await page.click('#probes .probe:nth-child(1)');
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(OUT, '03-probe.png') });
+  await shot('03-probe.png');
 
   const pickAction = async (idx) => {
     const acts = await page.$$('#actions .act');
@@ -35,37 +58,40 @@ const OUT = path.join(__dirname, '..', 'shots');
     await acts[Math.min(idx, acts.length - 1)].click();
   };
 
-  // S1 决策 → 截生长中
-  await pickAction(1);            // 重仓进场（80%）
-  await page.waitForTimeout(950);
-  await page.screenshot({ path: path.join(OUT, '04-grow-0_9s.png') });
-  await page.waitForTimeout(400);
-  await page.screenshot({ path: path.join(OUT, '05-reveal-1_3s.png') });
-  await page.waitForTimeout(750);
-  await page.screenshot({ path: path.join(OUT, '06-take-light-2_0s.png') });
-  await page.waitForTimeout(1400);
+  // S1
+  let cur = await stageName();
+  await pickAction(1);
+  await page.waitForTimeout(900);
+  await shot('04-grow-0_9s.png');
+  await page.waitForTimeout(450);
+  await shot('05-reveal-1_3s.png');
+  await page.waitForTimeout(700);
+  await shot('06-take-light-2_0s.png');
+  console.log('S1 →', await waitAdvance(cur));
 
   // S2
+  cur = await stageName();
   await page.click('#probes .probe:nth-child(2)');
   await page.click('#probes .probe:nth-child(3)');
   await page.waitForTimeout(200);
-  await pickAction(0);            // 加仓，全押
-  await page.waitForTimeout(3100);
+  await pickAction(0);
+  console.log('S2 →', await waitAdvance(cur));
 
   // S3
+  cur = await stageName();
   await page.click('#probes .probe:nth-child(1)');
   await page.click('#probes .probe:nth-child(2)');
   await page.click('#probes .probe:nth-child(3)');
   await page.waitForTimeout(8500);
-  await page.screenshot({ path: path.join(OUT, '07-s3.png') });
-  await pickAction(1);            // 不动，等反弹
-  await page.waitForTimeout(3400);
-
+  await shot('07-s3.png');
+  await pickAction(1);
+  console.log('S3 →', await waitAdvance(cur));
   await page.waitForTimeout(900);
-  await page.screenshot({ path: path.join(OUT, '08-result-top.png') });
+
+  await shot('08-result-top.png');
   await page.evaluate(() => { const r = document.querySelector('#result'); r.scrollTop = r.scrollHeight; });
   await page.waitForTimeout(400);
-  await page.screenshot({ path: path.join(OUT, '09-result-bottom.png') });
+  await shot('09-result-bottom.png');
 
   const summary = await page.evaluate(() => {
     const res = document.querySelector('#result');
@@ -74,7 +100,7 @@ const OUT = path.join(__dirname, '..', 'shots');
       xian: document.querySelector('.xian b') ? document.querySelector('.xian b').textContent : null,
       kad: document.querySelector('.kadname') ? document.querySelector('.kadname').textContent : null,
       plots: document.querySelectorAll('#resultField .plot').length,
-      fruits: document.querySelectorAll('#resultField .fruit').length
+      fruits: document.querySelectorAll('#resultField .fruit.on').length
     };
   });
 

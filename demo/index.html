@@ -14,15 +14,15 @@
   <section class="screen on" id="intro">
     <div class="blob"></div>
     <h1>我们不看你会不会赚钱<br>看你怎么做决定</h1>
-    <p>三关，春、夏、冬，都是真实发生过的行情。</p>
+    <p>三关都是真实发生过的行情，走的是同一条时间线。</p>
     <p class="dim">每一关你做一个决定，地里就长出一株。</p>
     <button class="btn" id="startBtn" style="margin-top:22px">开始</button>
     <div id="pick" class="pick">
-      <p class="dim" style="margin:0 0 10px">先凭直觉选一只 —— 你觉得你是哪一种？</p>
+      <p class="dim pkhead">先凭直觉选一只 —— 你觉得你是哪一种？</p>
       <div class="beasts" id="beastPick"></div>
-      <p class="dim" style="margin-top:12px;font-size:11px">这一选只是对照，不参与任何判定</p>
+      <p class="dim pkfoot">这一选只是对照，不参与任何判定</p>
     </div>
-    <p class="dim" style="margin-top:26px;font-size:11px">demo v0.2：第一版系统 · 生长压到 2.8 秒 · 美术为占位</p>
+    <p class="dim" style="margin-top:26px;font-size:11px">demo v0.3：第一版系统 · 生长压到 2.8 秒 · 美术为占位</p>
   </section>
 
   <section class="screen" id="stage">
@@ -37,7 +37,9 @@
     </div>
     <div id="field" data-season="spring">
       <div class="skyline"></div>
+      <div id="fieldHint">做一个决定，地里就长出一株</div>
       <div class="beast" id="beast">
+        <img id="beastArt" class="beast-art" alt="">
         <svg viewBox="0 0 44 40" width="44" height="40" fill="currentColor">
           <path id="beastBody" d="M7 34 Q3 23 13 20 Q22 17 29 22 Q35 27 33 34 Z"/>
           <circle cx="33" cy="17" r="7.2"/>
@@ -65,6 +67,10 @@
   <section class="screen" id="result"></section>
 
 </div>
+
+<div id="helpMask"></div>
+<div id="helpPop"></div>
+
 <script src="data.js"></script>
 <script src="app.js"></script>
 </body>

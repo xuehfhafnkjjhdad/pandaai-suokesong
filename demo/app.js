@@ -14,7 +14,8 @@
     i: 0, pos: 0, cash: 100000, entries: [],
     probes: [], locked: false, timers: [], chartToken: 0,
     stageStart: 0, self: null, fed: 0, rows: [], extra: null, pendingReveal: null,
-    care: { loose: false, hedge: false }
+    care: { loose: false, hedge: false },
+    round: 0            // 第几轮。0 = 首轮；≥1 时换一套决策选项，避免重玩完全重复
   };
 
   var W = {
@@ -36,13 +37,30 @@
   };
   var ORDER = ['金', '木', '水', '火', '土'];
 
+  // 五只灵兽。img 指向 assets/ 下的潜力态立绘，图未到位时自动降级成剪影。
   var BEASTS = [
-    { k: '金', n: '猎豹', d: '盯信号，该砍就砍' },
-    { k: '木', n: '大象', d: '看得远，能等' },
-    { k: '水', n: '狐狸', d: '先验证，再动手' },
-    { k: '火', n: '狼', d: '敢冲，怕错过' },
-    { k: '土', n: '龟', d: '先保本，慢就是快' }
+    { k: '金', n: '猎豹', d: '盯信号，该砍就砍',
+      img: 'assets/beast_cheetah_1.png', tag: '纪律型 · 时机派',
+      long: '它有耐心，但只对"等信号"有耐心。位置盯住，条件不到就不动；到了就整只扑出去，走错了转身就走，不回头看。它最怕的不是亏，是明明看见机会却没上车——所以偶尔会自己造一个信号出来。' },
+    { k: '木', n: '大象', d: '看得远，能等',
+      img: 'assets/beast_elephant_1.png', tag: '长期型 · 复利派',
+      long: '它按年算，不按天算。别人在争论今天涨跌，它在想三年后这头象能长多大。它吃得慢、走得慢，但每一步都算数。弱点是在需要快速掉头的时候，它转身要很久。' },
+    { k: '水', n: '狐狸', d: '先验证，再动手',
+      img: 'assets/beast_fox_1.png', tag: '研究型 · 验证派',
+      long: '它不信任何人，包括自己。你给它一个结论，它先去翻原始数据；你给它一条规律，它先找反例。它很少被套，但也常常因为"还没验证完"，错过最快的那班车。' },
+    { k: '火', n: '狼', d: '敢冲，怕错过',
+      img: 'assets/beast_wolf_1.png', tag: '进攻型 · 动量派',
+      long: '它是被"错过"驱动的，不是被"赚到"驱动的。群里都在涨的时候它坐不住，先冲进去再说。它的爆发力最强，回撤也最深——问题在于进场那一刻，它通常没看数据。' },
+    { k: '土', n: '龟', d: '先保本，慢就是快',
+      img: 'assets/beast_tortoise_1.png', tag: '防守型 · 保本派',
+      long: '它先想的是"别亏完"，不是"能赚多少"。它慢、它躲、它宁可少赚。几乎不会死在一次暴跌里，但也容易在行情最好的时候待在岸上不下来。' }
   ];
+
+  function beastOf(k) {
+    for (var i = 0; i < BEASTS.length; i++) if (BEASTS[i].k === k) return BEASTS[i];
+    return BEASTS[0];
+  }
+  function beastName(k) { return beastOf(k).n; }
 
   var FORMS = [
     { n: '潜力态 · 幼兽', s: '还没定形，可塑性最高' },
@@ -77,6 +95,67 @@
   ];
 
   var SEASON = { 春: 'spring', 夏: 'summer', 秋: 'autumn', 冬: 'winter' };
+
+  // 第二轮起换一套决策姿势：同样是这三关行情，但选项与仓位不同。
+  // 用的行为码全部在规则表内（A3/A4/A5/A6/A7/A8/A10/A11/D1/E2），不需要改判分。
+  var ALT_ACTIONS = {
+    S1: [
+      { id: 'S1_B_SL', label: '先设好止损，再进 40%', code: 'D1', positionPct: 40, stopLossSet: true },
+      { id: 'S1_B_HALF', label: '半仓 50%，边走边看', code: 'A6', positionPct: 50 },
+      { id: 'S1_B_WAIT', label: '这周不碰，先看着', code: 'A7', positionPct: 0 }
+    ],
+    S2: {
+      holding: [
+        { id: 'S2_B_TRIM', label: '减到三成，剩下的让它跑', code: 'A3', positionPct: 30 },
+        { id: 'S2_B_ADD', label: '再加，涨势才刚开始', code: 'A5', positionPct: 100 },
+        { id: 'S2_B_TRAIL', label: '上移止损，先把利润锁住', code: 'D1', positionPct: 'keep', stopLossSet: true }
+      ],
+      empty: [
+        { id: 'S2_B_CHASE', label: '追进去（30%）', code: 'A5', positionPct: 30 },
+        { id: 'S2_B_PASS', label: '涨成这样了，不追', code: 'A10', positionPct: 0 }
+      ]
+    },
+    S3: {
+      holding: [
+        { id: 'S3_B_HALF', label: '先砍一半，留一半看', code: 'A8', positionPct: 50 },
+        { id: 'S3_B_OFF', label: '关掉软件，不看了', code: 'A4', positionPct: 'keep' },
+        { id: 'S3_B_ADD', label: '这是机会，加满', code: 'E2', positionPct: 100 }
+      ],
+      empty: [
+        { id: 'S3_B_CATCH', label: '跌了 7%，接一点（20%）', code: 'A11', positionPct: 20 },
+        { id: 'S3_B_WAIT', label: '还没跌完，继续等', code: 'A7', positionPct: 0 }
+      ]
+    }
+  };
+
+  // 农事与指标的说明文案（给不熟悉术语的人看）
+  var HELP = {
+    water: {
+      t: '浇水 · 查数据',
+      b: '每点一个指标，就等于"我去看了一眼数据"，土上会湿一分。<br><br>' +
+        '这不是让你算，是看你会不会<b>先看再动</b>。一次不查就下单，和查了三项才下单，' +
+        '在最后画像里是完全不同的两种人。查得多不代表更准，但<b>一次不看</b>一定更危险。<br><br>' +
+        '<b>四个指标分别在说什么：</b><br>' +
+        '· <b>5年分位</b>：现在的点位，在近五年里排第几。0% 就是五年最低。<br>' +
+        '· <b>3年回撤</b>：从近三年最高点跌下来多少。<br>' +
+        '· <b>量能倍数</b>：今天成交额是近 20 天平均的几倍。大于 1.5 说明有人在抢。<br>' +
+        '· <b>20日振幅</b>：最近 20 天每天平均上下折腾多少。越大越颠。'
+    },
+    care: {
+      t: '松土 / 立篱笆 在做什么',
+      b: '<b>松土 = 我在验证一个假设。</b><br>点它不等于做了任何交易，它是给系统的一句话：' +
+        '"这次我不是凭感觉，我心里有一个想法，想去验证它。"土被翻过的地方，说明你想过为什么。<br><br>' +
+        '<b>立篱笆 = 提前想好亏到哪就撤。</b><br>相当于设置止损单。篱笆扎下去，说明你在进场之前就想好了退路。' +
+        '这两件事都不会让你多赚，但在画像里，它们是"有没有方法"和"有没有纪律"的直接证据。<br><br>' +
+        '两个都可以不点——不点也是一种选择，只是地里不会留下这些痕迹。'
+    },
+    actions: {
+      t: '这三个按钮是什么',
+      b: '每个按钮就是一次真实的决定：拿多少钱进场。<br><br>' +
+        '这里的行情是 2024 年真实走过的，你做的这个决定会直接影响下一关你手里<br>' +
+        '有多少仓位、要面对多大的浮亏。<b>选完不能改。</b>'
+    }
+  };
 
   function $(s, r) { return (r || document).querySelector(s); }
   function at(ms, fn) { var t = setTimeout(fn, ms); S.timers.push(t); return t; }
@@ -253,6 +332,12 @@
     var el = $('#formName'), beast = $('#beast');
     el.textContent = FORMS[f].n;
     beast.dataset.form = String(f);
+    // 有立绘时按阶换图：_1 潜力 / _2 成长 / _3 定形
+    var art = $('#beastArt');
+    if (art && BEAST_IMG_ON && S.self) {
+      var src = beastOf(S.self).img.replace(/_1\.png$/, '_' + (f + 1) + '.png');
+      if (art.getAttribute('src') !== src) art.setAttribute('src', src);
+    }
     if (flash) {
       el.parentNode.classList.remove('up');
       void el.parentNode.offsetWidth;
@@ -261,6 +346,12 @@
   }
 
   /* ─────────── 关卡 ─────────── */
+  // 只保留情境名，不再对外说"春 / 夏 / 冬"——季节只作为天光渲染，不作为概念出现
+  function stageTitle(st) {
+    var parts = String(st.name).split('·');
+    return parts[1] || parts[0];
+  }
+
   function enterStage(idx) {
     S.i = idx; S.probes = []; S.locked = false; S.stageStart = performance.now();
     S.care = { loose: false, hedge: false };
@@ -270,8 +361,10 @@
     field.dataset.season = SEASON[st.name.charAt(0)] || 'spring';
 
     $('#console').classList.remove('collapsed');
-    $('#askline').textContent = '你可以先照料一下，也可以直接决定。';
-    $('#stageName').textContent = st.name;
+    $('#askline').textContent = S.round > 0
+      ? '第 ' + (S.round + 1) + ' 轮 · 同样的行情，这次换成另一套选项。'
+      : '你可以先照料一下，也可以直接决定。';
+    $('#stageName').textContent = stageTitle(st);
     $('#stageDate').textContent = fmtDate(st.date);
     var dots = document.querySelectorAll('.dots i');
     for (var d = 0; d < dots.length; d++) dots[d].classList.toggle('on', d <= idx);
@@ -281,6 +374,9 @@
     renderProbes(st);
     renderActions(st);
     startTimer();
+    // 地里还一株都没有时，给一句话说清"做了决定就会长出来"
+    var fh = $('#fieldHint');
+    if (fh) fh.classList.toggle('on', S.entries.length === 0);
     requestAnimationFrame(function () { resizeCanvas(); animateChart(); repaintField(); });
   }
 
@@ -317,7 +413,7 @@
 
   function renderProbes(st) {
     var host = $('#probes'); host.innerHTML = '';
-    $('#carehead').innerHTML = '<b>浇水</b> · 每查一项数据，土上就湿一分';
+    $('#carehead').innerHTML = careHeadHtml(0);
     PROBES.forEach(function (p) {
       var b = document.createElement('button');
       b.className = 'probe';
@@ -333,16 +429,25 @@
     });
   }
 
+  function careHeadHtml(n) {
+    var txt = n === 0
+      ? '每查一项数据，土上就湿一分'
+      : '已查 ' + n + ' 项' + (n >= 3 ? ' · 查得挺细' : '');
+    // 左：浇水的说明入口；右：农事（松土/篱笆）的说明入口。合成一行省垂直空间
+    return '<span class="ch-l"><b>浇水</b> · ' + txt + '<i class="qbtn" data-help="water">?</i></span>' +
+      '<span class="ch-r">农事<i class="qbtn" data-help="care">?</i></span>';
+  }
+
   // 浇水回执：≤0.15s，土立刻湿
   function waterFeedback() {
     var pl = plotOf($('#field'), S.i);
-    if (!pl) return;
-    var wet = $('.wet', pl);
     var n = S.probes.length;
-    wet.classList.add('on');
-    wet.style.opacity = n >= 2 ? 1 : .45;
-    var head = $('#carehead');
-    head.innerHTML = '<b>浇水</b> · 已查 ' + n + ' 项' + (n >= 3 ? '（够了，再看也湿不到哪去）' : '');
+    if (pl) {
+      var wet = $('.wet', pl);
+      wet.classList.add('on');
+      wet.style.opacity = n >= 2 ? 1 : .45;
+    }
+    $('#carehead').innerHTML = careHeadHtml(n);
   }
 
   function resolvePos(v, cur) {
@@ -354,6 +459,15 @@
   function renderActions(st) {
     var host = $('#actions'); host.innerHTML = '';
     var group = S.pos > 0 ? (st.actions.holding || st.actions.default) : (st.actions.default || st.actions.empty);
+    // 第二轮起换一套决策姿势，避免"重玩还是那三个按钮"
+    var alt = ALT_ACTIONS[st.id];
+    if (S.round > 0 && alt) {
+      if (Object.prototype.toString.call(alt) === '[object Array]') group = alt;
+      else {
+        var g2 = S.pos > 0 ? alt.holding : alt.empty;
+        if (g2 && g2.length) group = g2;
+      }
+    }
     group.forEach(function (a) {
       var b = document.createElement('button');
       b.className = 'act';
@@ -390,6 +504,7 @@
     for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
     $('#timerFill').style.transition = 'none';
     var hedge = S.care.hedge || !!a.stopLossSet;
+    var hint = $('#fieldHint'); if (hint) hint.classList.remove('on');
     $('#askline').textContent = '你选了：' + a.label + (hedge ? '（篱笆立着，止损在）' : '');
     $('#console').classList.add('collapsed');
 
@@ -672,20 +787,31 @@
     var totalProbes = S.entries.reduce(function (a, e) { return a + e.probes.length; }, 0);
     var heavyN = S.entries.filter(function (e) { return e.pos >= 70; }).length;
 
-    // 自我判定 vs 行为显示
+    // 自我判定 vs 行为显示 —— 对外只说动物，不出现五行
     var same = S.self && S.self === dominant;
+    var real = beastOf(dominant);
     var selfLine = !S.self ? '' : (same
-      ? '你选的是 <b>' + BEASTS.filter(function (b) { return b.k === S.self })[0].n + '（' + S.self + '）</b>，行为也是 <b>' + dominant + '</b> —— 你很了解自己。'
-      : '你以为自己是 <b>' + BEASTS.filter(function (b) { return b.k === S.self })[0].n + '（' + S.self + '）</b>，行为却显示 <b>' + dominant + '</b> —— 这是这次最大的发现。');
+      ? '你选的是 <b>' + beastOf(S.self).n + '</b>，三关走下来，你的行为也确实是 <b>' + real.n + '</b> 这一类 —— 你挺了解自己。'
+      : '你以为自己是 <b>' + beastOf(S.self).n + '</b>，但三关的行为更像 <b>' + real.n + '</b> —— 这是这次最大的发现。');
 
     var html = '';
     html += '<h2>这是你这三关的地</h2>';
-    html += '<div class="sub">' + PD.meta.story + '｜春、夏、冬，同一块地，三株收成</div>';
+    html += '<div class="sub">' + PD.meta.story + '｜同一块地，三株收成</div>';
     html += '<div id="resultField"></div>';
+
+    // 果实讲解图：紧贴田地，说清颜色/大小/光泽各代表什么
+    html += '<div class="fnote"><div class="fnh">这几颗果实怎么读</div>';
+    html += '<div class="fnrow"><i>大小</i><span>这一把赚了还是亏了。只影响好不好看，<b>不进任何评分</b>。</span></div>';
+    html += '<div class="fnrow"><i>光泽</i><span>动手之前你查没查数据。亮 = 有依据，暗 = 凭感觉。<b>灵兽只吃光。</b></span></div>';
+    html += '<div class="fnrow"><i>颜色</i><span>这一次你的决定偏哪一类：</span></div>';
+    html += '<div class="fncolors">' + ORDER.map(function (c) {
+      return '<span class="fnc"><em style="background:' + COLORS[c].hex + '"></em>' + beastOf(c).n + ' <s>' + beastOf(c).d + '</s></span>';
+    }).join('') + '</div></div>';
 
     html += '<div class="formline"><b>' + FORMS[form].n + '</b><span>' + FORMS[form].s + '</span></div>';
 
-    if (selfLine) html += '<div class="card" style="margin-top:12px"><h3>你以为 vs 实际</h3><p>' + selfLine + '</p></div>';
+    if (selfLine) html += '<div class="card" style="margin-top:12px"><h3>你以为 vs 实际</h3><p>' + selfLine + '</p>' +
+      '<p class="tiny" style="margin-top:6px">' + real.n + ' · ' + real.tag + '</p></div>';
 
     var shown = ORDER.filter(function (c) { return wx.pct[c] > 0; })
       .sort(function (a, b) { return wx.pct[b] - wx.pct[a]; });
@@ -698,7 +824,7 @@
     html += '<div class="wuxing">' + shown.map(function (c) {
       var n = S.entries.filter(function (e) { return !e.fruit.hole && e.fruit.color === c; }).length;
       return '<div class="wrow"><span class="sw" style="background:' + COLORS[c].hex + '"></span>' +
-        '<span style="width:28px">' + c + '</span>' +
+        '<span style="width:38px">' + beastOf(c).n + '</span>' +
         '<span class="bar"><i style="width:' + wx.pct[c] + '%;background:' + COLORS[c].hex + '"></i></span>' +
         '<span class="pct">' + wx.pct[c] + '%</span>' +
         '<span class="fnum">' + (n ? n + ' 株' : '—') + '</span></div>';
@@ -710,26 +836,26 @@
         '｜浇' + e.probes.length + '｜' + (e.loose ? '松土' : '—') + '｜' + (e.stopLoss ? '篱笆' : '—') + '</span>';
     }).join('') + '</div></div>';
 
-    html += '<div class="card"><h3>给你练这一件 · ' + dominant + ' × ' + FORMS[form].n.split(' · ')[0] + '</h3>';
+    html += '<div class="card"><h3>给你练这一件 · ' + real.n + ' × ' + FORMS[form].n.split(' · ')[0] + '</h3>';
     html += '<div class="kadname">' + task + '</div>';
     var noKad = kad[0] === '这一局没抓到明显卡点';
-    html += '<p>用你偏好的题材（<b>' + dominant + '</b>），' +
+    html += '<p>用你偏好的题材（<b>' + real.n + '</b>），' +
       (noKad ? '把已经做对的那一步做深' : '练你不擅长的那一步（<b>' + kad[0] + '</b>）') + '，' +
       (totalProbes === 0 ? '而这三次你一次水都没浇。' : '这三次你一共浇了 ' + totalProbes + ' 次水。') + '</p>';
     html += '<div class="meta"><span>6 分钟</span><span>Panda Data 近 5 年日线</span><span>做完地里多一株</span></div>';
     html += '</div>';
 
     html += '<div class="card dimcard"><h3>留了一畦地</h3><p>回来收第二茬 → 解锁 <b>' +
-      (BEASTS.filter(function (b) { return b.k === dominant })[0] || BEASTS[0]).n + '</b> 的异色变体（外观彩蛋，不是更强）。</p></div>';
+      real.n + '</b> 的异色变体（外观彩蛋，不是更强）。</p></div>';
 
     // 依据：分数只藏在这里，不摆到脸上
-    html += '<details class="evbox"><summary>查看依据（五行得分、营养、时间）</summary>';
+    html += '<details class="evbox"><summary>查看依据（偏好分布、营养、时间）</summary>';
     html += '<div class="xian"><b>' + xian + '</b><span>/ 9 本局营养 · ' + FORMS[form].n + '</span></div>';
     html += '<div class="xbar">' + [0, 1, 2, 3, 4, 5, 6, 7, 8].map(function (k) {
       return '<i class="' + (k < xian ? 'on' : '') + '"></i>';
     }).join('') + '</div>';
     html += '<div class="ev">' + ORDER.map(function (c) {
-      return '<span>' + c + ' ' + (wx.raw[c] || 0).toFixed(1) + '（' + wx.pct[c] + '%）</span>';
+      return '<span>' + beastOf(c).n + ' ' + (wx.raw[c] || 0).toFixed(1) + '（' + wx.pct[c] + '%）</span>';
     }).join('') + '</div>';
     html += '<div class="ev" style="margin-top:8px">' + S.entries.map(function (e) {
       return '<span>' + e.stageId + '｜' + Math.round(e.decisionMs / 1000) + 's｜营养 ' + e.nutrition + '/3</span>';
@@ -739,17 +865,19 @@
       S.entries.filter(function (e) { return e.stopLoss; }).length + ' 次立篱笆。与命理无关。</p>';
     html += '</details>';
 
-    html += '<div style="text-align:center;margin-top:16px"><button class="btn ghost" id="againBtn">再玩一次</button></div>';
+    html += '<div class="againbar"><button class="btn" id="againBtn">再来一轮</button>' +
+      '<p class="tiny" style="text-align:center;margin:8px 0 0">同样的三关行情，这次换成另一套选项</p></div>';
 
     var res = $('#result');
     res.innerHTML = html;
-    $('#againBtn').onclick = function () { location.reload(); };
+    $('#againBtn').onclick = function () { restartRound(); };
 
     var rf = $('#resultField');
     RF_SEASON(rf);
     S.entries.forEach(function (e, idx) { buildPlot(rf, idx); });
     var rb = $('#beast').cloneNode(true);
     rb.removeAttribute('id');
+    var ra = rb.querySelector('#beastArt'); if (ra) ra.removeAttribute('id');
     rb.removeAttribute('style');
     rb.dataset.form = String(form);
     rf.appendChild(rb);
@@ -777,17 +905,50 @@
   }
 
   /* ─────────── 启动 ─────────── */
+  // 立绘开关：把 beast_*.png 放进 demo/assets/ 之后改成 true。
+  // 现在还没有图，开着会发 5 个 404、控制台一片红，所以默认关掉走剪影。
+  var BEAST_IMG_ON = true;
+
+  // 立绘未就位时的剪影占位：五只各不相同，免得看起来像同一只猫
+  var SILS = {
+    金: '<svg viewBox="0 0 44 40" width="46" height="42" fill="currentColor">' +
+      '<ellipse cx="18" cy="30" rx="13" ry="5.4"/><circle cx="33" cy="21" r="5.8"/>' +
+      '<path d="M29.5 16.5 L28.5 10.5 L33.5 15 Z"/>' +
+      '<path d="M5 29 Q-1 22 4 15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+    木: '<svg viewBox="0 0 44 40" width="46" height="42" fill="currentColor">' +
+      '<ellipse cx="18" cy="30" rx="13" ry="7"/><ellipse cx="28" cy="21" rx="5.4" ry="8"/>' +
+      '<circle cx="34" cy="21" r="5"/><path d="M35 25 Q37.5 32 31.5 34.5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/></svg>',
+    水: '<svg viewBox="0 0 44 40" width="46" height="42" fill="currentColor">' +
+      '<ellipse cx="18" cy="30" rx="11" ry="4.8"/><circle cx="31" cy="20" r="5.4"/>' +
+      '<path d="M27 15.5 L25.5 9 L31 14 Z"/><path d="M33 15 L35.5 9 L36 15.5 Z"/>' +
+      '<path d="M7 30 Q-1 24 5 16 Q9 24 10 28 Z"/></svg>',
+    火: '<svg viewBox="0 0 44 40" width="46" height="42" fill="currentColor">' +
+      '<ellipse cx="19" cy="29" rx="12.5" ry="5.8"/><circle cx="32" cy="19" r="5.6"/>' +
+      '<path d="M28 14 L26.5 7 L32 12 Z"/><path d="M35 13.5 L37.5 7 L38.5 13 Z"/>' +
+      '<path d="M7 28 Q3 34 9 35.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+    土: '<svg viewBox="0 0 44 40" width="46" height="42" fill="currentColor">' +
+      '<path d="M7 32 Q7 15 22 15 Q37 15 37 32 Z"/><circle cx="34" cy="27" r="4.4"/>' +
+      '<rect x="9" y="31" width="5.5" height="4.4" rx="2.2"/><rect x="19" y="32" width="5.5" height="4.4" rx="2.2"/>' +
+      '<rect x="29" y="31" width="5.5" height="4.4" rx="2.2"/></svg>'
+  };
+  function silOf(k) { return SILS[k] || SILS['金']; }
+
   function initPick() {
     var host = $('#beastPick');
     BEASTS.forEach(function (b) {
       var btn = document.createElement('button');
-      btn.className = 'beastchip';
-      btn.innerHTML = '<svg viewBox="0 0 44 40" width="30" height="27" fill="' + COLORS[b.k].hex + '">' +
-        '<path d="M7 34 Q3 23 13 20 Q22 17 29 22 Q35 27 33 34 Z"/>' +
-        '<circle cx="33" cy="17" r="7.2"/>' +
-        '<path d="M28 11 L26 5 L32 9 Z"/><path d="M37 11 L39 5 L41 10 Z"/>' +
-        '<path d="M8 24 Q1 20 3 11" fill="none" stroke="' + COLORS[b.k].hex + '" stroke-width="2.6" stroke-linecap="round"/></svg>' +
-        '<span class="nm">' + b.n + '</span><span class="wx">' + b.k + ' · ' + b.d + '</span>';
+      btn.className = 'beastcard';
+      btn.style.setProperty('--bc', COLORS[b.k].hex);
+      btn.innerHTML =
+        '<span class="bimg' + (BEAST_IMG_ON ? '' : ' noimg') + '">' +
+        (BEAST_IMG_ON
+          ? '<img src="' + b.img + '" alt="' + b.n + '" onerror="this.parentNode.classList.add(\'noimg\');this.remove()">'
+          : '') +
+        '<span class="bsil" style="color:' + COLORS[b.k].ink + '">' + silOf(b.k) + '</span></span>' +
+        '<span class="btxt">' +
+        '<span class="brow"><b class="bn">' + b.n + '</b><i class="btag">' + b.tag + '</i></span>' +
+        '<span class="blong">' + b.long + '</span>' +
+        '</span>';
       btn.onclick = function () {
         S.self = b.k;
         startRun();
@@ -796,8 +957,18 @@
     });
   }
 
+  // 清空田地，重新铺三格（重开时必须先删旧的，否则会叠在上一轮上面）
+  function clearField() {
+    var f = $('#field');
+    var olds = f.querySelectorAll('.plot');
+    for (var k = 0; k < olds.length; k++) olds[k].parentNode.removeChild(olds[k]);
+    buildPlot(f, 0); buildPlot(f, 1); buildPlot(f, 2);
+  }
+
   function startRun() {
+    S.round = 0;
     $('#pick').classList.remove('on');
+    $('#intro').classList.remove('picking');
     switchScreen('stage');
     var field = $('#field');
     if (!field.querySelector('.plot')) { buildPlot(field, 0); buildPlot(field, 1); buildPlot(field, 2); }
@@ -805,11 +976,56 @@
     requestAnimationFrame(function () { resizeCanvas(); enterStage(0); });
   }
 
+  // 继续玩：不清页面，只清这一局的痕迹，换一套选项重来
+  function restartRound() {
+    clearTimers();
+    S.round++;
+    S.i = 0; S.pos = 0; S.cash = 100000; S.entries = [];
+    S.probes = []; S.locked = false; S.fed = 0; S.rows = []; S.extra = null; S.pendingReveal = null;
+    S.care = { loose: false, hedge: false };
+    S.chartToken++;
+    var fn = $('#formName'); if (fn) fn.textContent = FORMS[0].n;
+    clearField();
+    switchScreen('stage');
+    requestAnimationFrame(function () { resizeCanvas(); enterStage(0); });
+  }
+
+  /* ─────────── 说明气泡（浇水 / 松土到底在干嘛） ─────────── */
+  function showHelp(key) {
+    var h = HELP[key];
+    var pop = $('#helpPop'), mask = $('#helpMask');
+    if (!h || !pop) return;
+    pop.innerHTML = '<h4>' + h.t + '</h4><div class="hb">' + h.b + '</div>' +
+      '<button class="btn" id="helpClose" style="width:100%;margin-top:12px">知道了</button>';
+    pop.classList.add('on'); mask.classList.add('on');
+    $('#helpClose').onclick = hideHelp;
+  }
+  function hideHelp() {
+    var pop = $('#helpPop'), mask = $('#helpMask');
+    if (pop) pop.classList.remove('on');
+    if (mask) mask.classList.remove('on');
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    while (t && t !== document) {
+      if (t.classList && t.classList.contains('qbtn')) {
+        e.preventDefault(); e.stopPropagation();
+        showHelp(t.getAttribute('data-help'));
+        return;
+      }
+      t = t.parentNode;
+    }
+    hideHelp();
+  }, true);
+
   $('#startBtn').onclick = function () {
     if ($('#pick').classList.contains('on')) return;
     $('#pick').classList.add('on');
+    $('#intro').classList.add('picking');
   };
 
+  if (BEAST_IMG_ON) document.body.classList.add('img-on');
   initPick();
   window.addEventListener('resize', function () { resizeCanvas(); drawChart(rowsNow().length); repaintField(); });
 })();
