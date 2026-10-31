@@ -913,13 +913,13 @@
         '｜查数据 ' + e.probes.length + ' 项' + (e.stopLoss ? '｜有止损安排' : '') + '</span>';
     }).join('') + '</div></div>';
 
-    html += '<div class="card"><h3>给你练这一件 · ' + real.n + ' × ' + FORMS[form].n.split(' · ')[0] + '</h3>';
+    html += '<div class="card"><h3>给你练这一件（示例任务） · ' + real.n + ' × ' + FORMS[form].n.split(' · ')[0] + '</h3>';
     html += '<div class="kadname">' + task + '</div>';
     var noKad = kad[0] === '这一局没抓到明显卡点';
     html += '<p>用你偏好的题材（<b>' + real.n + '</b>），' +
       (noKad ? '把已经做对的那一步做深' : '练你不擅长的那一步（<b>' + kad[0] + '</b>）') + '，' +
       (totalProbes === 0 ? '这三次你还没有查过数据。' : '这三次你一共查了 ' + totalProbes + ' 项数据。') + '</p>';
-    html += '<div class="meta"><span>6 分钟</span><span>Panda Data 近 5 年日线</span><span>做完地里多一株</span></div>';
+    html += '<div class="meta"><span>约 6 分钟</span><span>PandaData 近 5 年日线</span><span>做完地里多一株 · 规划中</span></div>';
     html += '</div>';
 
     // 依据：分数只藏在这里，不摆到脸上
